@@ -1,0 +1,156 @@
+# Copyright (c) 2021 Huawei Device Co., Ltd.
+# Licensed under the Apache License, Version 2.0 (the "License");
+# you may not use this file except in compliance with the License.
+# You may obtain a copy of the License at
+#
+#     http://www.apache.org/licenses/LICENSE-2.0
+#
+# Unless required by applicable law or agreed to in writing, software
+# distributed under the License is distributed on an "AS IS" BASIS,
+# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+# See the License for the specific language governing permissions and
+# limitations under the License.
+
+import("//base/hiviewdfx/hilog/hilog.gni")
+import("//build/ohos.gni")
+
+framework_root = "//base/hiviewdfx/hilog/frameworks"
+libhilog_root = "$framework_root/libhilog"
+libhilog_base_root = "$libhilog_root/base"
+vsnprintf_root = "$libhilog_root/vsnprintf"
+
+config("libhilog_pub_config") {
+  visibility = [ ":*" ]
+  include_dirs = [ "include" ]
+}
+if (is_mingw || is_mac || is_linux || is_ohos) {
+  ohos_shared_library("libhilog") {
+    public_configs = [ ":libhilog_pub_config" ]
+    if (is_ohos) {
+      deps = [ "../../../frameworks/libhilog:libhilog_source_ohos" ]
+    } else if (is_mingw) {
+      deps = [ "../../../frameworks/libhilog:libhilog_source_windows" ]
+    } else if (is_mac) {
+      deps = [ "../../../frameworks/libhilog:libhilog_source_mac" ]
+    } else if (is_linux) {
+      deps = [ "../../../frameworks/libhilog:libhilog_source_linux" ]
+    }
+
+    if (is_ohos) {
+      output_extension = "so"
+      version_script = "libhilog.map"
+      innerapi_tags = [
+        "chipsetsdk",
+        "platformsdk",
+        "sasdk",
+      ]
+      install_enable = !hilog_native_feature_ohcore
+      install_images = [
+        "system",
+        "updater",
+      ]
+      sanitize = {
+        cfi = true
+        cfi_cross_dso = true
+        debug = false
+      }
+    }
+
+    part_name = "hilog"
+    subsystem_name = "hiviewdfx"
+  }
+}
+
+template("libhilog") {
+  forward_variables_from(invoker, "*")
+  if (current_os == "android" || current_os == "ios") {
+    ohos_static_library(target_name) {
+      public_configs = [ ":libhilog_pub_config" ]
+      deps = [ "../../../platform:libhilog_platform_source_$platform" ]
+
+      part_name = "hilog"
+      subsystem_name = "hiviewdfx"
+    }
+  } else {
+    ohos_shared_library(target_name) {
+      sanitize = {
+        cfi = true
+        cfi_cross_dso = true
+        debug = false
+      }
+      public_configs = [ ":libhilog_pub_config" ]
+      deps = [ "../../../frameworks/libhilog:libhilog_source_$platform" ]
+      if (platform == "ohos") {
+        output_extension = "so"
+        version_script = "libhilog.map"
+      }
+
+      install_enable = !hilog_native_feature_ohcore
+      install_images = [
+        "system",
+        "updater",
+      ]
+
+      if (platform == "ohos") {
+        innerapi_tags = [
+          "chipsetsdk",
+          "platformsdk",
+          "sasdk",
+        ]
+      }
+
+      part_name = "hilog"
+      subsystem_name = "hiviewdfx"
+    }
+  }
+}
+
+foreach(item, platforms) {
+  # 宿主平台库只在对应 host + 宿主工具链编译 (darwin port: 交叉目标不编译其他平台版本)
+  if (current_toolchain == host_toolchain &&
+      ((item == "windows" && host_os == "mingw") ||
+       (item == "mac" && host_os == "mac") ||
+       (item == "linux" && host_os == "linux") ||
+       (item == "ios" && host_os == "mac") ||
+       (item == "android" && host_os == "linux"))) {
+    libhilog("libhilog_" + item) {
+      platform = item
+    }
+  }
+}
+
+config("libhilog_base_pub_cfg") {
+  visibility = [ "*:*" ]
+  include_dirs = [
+    "include",
+    "../../../frameworks/libhilog/include",
+    "../../../frameworks/libhilog/vsnprintf/include",
+  ]
+}
+
+config("libhilog_base_config") {
+  visibility = [ "*:*" ]
+  include_dirs = [ "../../../frameworks/libhilog/include" ]
+}
+
+ohos_static_library("libhilog_base") {
+  public_configs = [ ":libhilog_base_pub_cfg" ]
+
+  include_dirs = [
+    "$vsnprintf_root/include",
+    "//base/hiviewdfx/hilog/interfaces/native/innerkits/include",
+  ]
+
+  vsnprintf_sources = [ "$vsnprintf_root/vsnprintf_s_p.c" ]
+
+  sources = [ "$libhilog_base_root/hilog_base.c" ]
+  sources += vsnprintf_sources
+  defines = [
+    "__RECV_MSG_WITH_UCRED_",
+    "HILOG_PROHIBIT_ALLOCATION",
+  ]
+  configs = [ ":libhilog_base_config" ]
+
+  subsystem_name = "hiviewdfx"
+  part_name = "hilog"
+}

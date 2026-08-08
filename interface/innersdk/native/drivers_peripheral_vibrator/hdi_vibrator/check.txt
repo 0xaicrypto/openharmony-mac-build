@@ -1,0 +1,2 @@
+include/vibrator_if.h f4b5d3d2e5f180a73bbd09651da632e00866a4a048b2b4d0d59287ddcebf41d1
+include/vibrator_type.h 68b88a8f9f692df3d36e1bced1c9a98ece68c10067eba221cd5f2691212275e3
