@@ -106,6 +106,19 @@ bison, make (gnu), gnu-sed, openjdk@17, libelf, pkg-config, ccache, nproc/python
 - jsvm(node/v8): /proc/cpuinfo 回退, HOST_OS=mac, cflags_host isysroot + linux 子目录头, v8 MADV_DONTFORK __APPLE__ 保护
 - 批量占位: 仓库缺失文件 (hap/资源/源码) 统一占位 (见下方说明)
 
+## 第三轮修复清单 (2026-08-08 晚, attempt 197-222)
+- jsvm(node/v8): 宿主构建完整打通 - gyp make.py (start-group/ElfW/-all_load/普通归档), gyp_node.py (-Dhost_os=mac),
+  v8.gyp (platform 源选择/trap-handler arm64), build_jsvm_inter.sh (cpuinfo/HOST_OS/cflags_host/dylib 拷贝),
+  platform-posix.cc (__APPLE__ 特例), platform-linux.cc (RemapShared), libjsvm.108.dylib→libjsvm.so
+- ohpm/hvigor: 下载 oh-command-line-tools 5.0.2 (repo.huaweicloud.com), node-v16.20.2-darwin-x64 真实二进制
+- hap: dlp_manager/permission_manager 改 ohos_prebuilt_etc 占位 (避免 SDK 依赖)
+- kernel ko: make_ko.sh 路径 arm64_virt + 签名跳过
+- 宿主头 shim (override/third_party): elf.h(hostelf), link.h(ElfW), endian.h, linux/magic.h, sys/statfs.h,
+  sys/statfs 双平台, securec.h/securectype.h, hitrace_meter.h, windows.h
+- FreeBSD fts.c: sys/statfs.h + linux/magic.h shim
+- unwinder 宿主工具: ElfW 大小写修正 (Elf64_Addr)
+- 构建推进: 内核✓ v8/node✓ SDK接口✓ hap链✓ 宿主工具链收尾中
+
 ## 已知限制 / 未完成
 - [ ] 全量构建到镜像产出（当前停在 hiebpf skeleton / bpftool 之后的下一个失败点）
 - [x] darwin 构建 bpftool（2026-08-07 完成：libbpf.a + bpftool 链接成功，`gen skeleton` 验证通过）
