@@ -1,162 +1,59 @@
-# OpenHarmony 原生 macOS (Apple Silicon) 构建支持
+# OpenHarmony 原生 macOS (Apple Silicon) 构建 + 启动
 
-在 macOS (Apple Silicon) 上原生编译 OpenHarmony `arm64_virt` 产品（QEMU 镜像），
-不打 Linux 虚拟机 / Docker，直接使用 Darwin host 工具链 + OHOS 自带的 darwin prebuilts。
+在 macOS (Apple Silicon) 上**原生**编译 OpenHarmony `arm64_virt` 产品 (QEMU 镜像)，
+不使用 Linux 虚拟机 / Docker，直接走 Darwin host 工具链 + OHOS 自带 darwin prebuilts。
 
 - 基线版本: OpenHarmony **5.0.3.137** (API 15, `arm64_virt` 产品)
 - 主机要求: macOS 13+ on Apple Silicon (arm64)
-- 构建命令:
-  ```bash
-  export PATH=/opt/homebrew/bin:/opt/homebrew/opt/bison/bin:$PATH
-  ./build.sh --product-name arm64_virt --no-prebuilt-sdk
-  ```
+- 远程仓库: https://github.com/0xaicrypto/openharmony-mac-build
 
-## 目录结构
+## 当前状态 (2026-08-12)
 
-```
-.opencode/mac/
-├── README.md                    # 本文档
-├── scripts/
-│   ├── setup.sh                 # 主机依赖安装（brew、symlinks、rust std 下载）
-│   ├── apply_patches.sh         # 将本目录中的修改文件回放到源码树
-│   └── build_bpftool.sh         # 从 kernel 5.10 源码在 darwin 上构建 bpftool
-├── compat/
-│   └── bpf_stubs/               # darwin 缺失的 Linux 头文件 stub（构建 libbpf/bpftool 用）
-└── <源码路径镜像>/              # 每个被修改的文件：最终内容；同名 .applied 空文件标记已应用
-```
+| 项 | 状态 |
+| --- | --- |
+| 全量构建 → 镜像产出 | ✅ 成功 (attempt 463) |
+| QEMU 启动 → 系统就绪 | ✅ foundation / render_service / wms / appfwk / bms 全部就绪，开机动画完整播放 (VNC) |
+| 桌面 (launcher) | ❌ appspawn 加载 ace 模块链时崩溃 (libimage_native dlopen 后跳转 .dynstr)，**当前唯一卡点** |
 
-## 使用方法
+## 快速开始
 
 ```bash
-# 1. 安装主机依赖
+# 1. 安装主机依赖 (brew 包、prebuilts symlink、rust std 下载)
 bash .opencode/mac/scripts/setup.sh
 
-# 2. 回放源码修改（参数: OHOS 源码根目录，默认当前目录）
+# 2. 回放源码修改 (参数: OHOS 源码根目录，默认当前目录)
 bash .opencode/mac/scripts/apply_patches.sh /path/to/ohos-src
 
-# 3. 构建 darwin bpftool（仅当 prebuilts/develop_tools/bpftool 缺失时需要）
+# 3. 构建 darwin bpftool (仅当 prebuilts/develop_tools/bpftool 缺失时需要)
 bash .opencode/mac/scripts/build_bpftool.sh /path/to/ohos-src
 
 # 4. 全量构建
 cd /path/to/ohos-src
+export PATH=/opt/homebrew/bin:/opt/homebrew/opt/bison/bin:$PATH
 ./build.sh --product-name arm64_virt --no-prebuilt-sdk
 ```
 
-## 修改清单
+## 仓库结构
 
-### override/third_party/sys/ (darwin 交叉编译 shim, 21 个)
-`__has_include_next` 模式: host 编译落到 mac SDK 真头; 交叉编译(aarch64-linux-ohos)落到最小 fallback。
-解决 configure 宿主机检测(HAVE_SYS_*)与交叉目标的头不一致问题(如 e2fsprogs `sys/disk.h`)。
-`build/config/compiler/BUILD.gn` 的 default_include_dirs 增加 `//override/third_party`。
+```
+├── README.md                 # 本文档 (总览)
+├── docs/
+│   ├── PROGRESS.md           # 四轮修复日志 (详细清单)
+│   └── HANDOVER.md           # ★ 交接指南: 当前卡点/调试方法/下一步 (新人从这开始)
+├── scripts/                  # 构建/重建/启动脚本 (见 scripts/README.md)
+├── compat/bpf_stubs/         # darwin 缺失的 Linux 头 stub (libbpf/bpftool 构建用)
+├── override/third_party/     # 宿主头 shim (host 编译落 mac SDK 头, 交叉编译落 fallback)
+├── prebuilts/                # prebuilts 修补说明 (ark_js, rustc, bpftool)
+└── <源码路径镜像>/           # 每个被修改的源码文件: 最终内容
+                              #   同名 .applied 空文件 = 标记已回放 (见 apply_patches.sh)
+```
 
-### build/ 基础设施
-| 文件 | 修改 |
-| --- | --- |
-| `build/templates/bpf/gen_bpf_uapi.py` | darwin 分支: 跳过 `make -C tools/lib/bpf`，用 `scripts/bpf_helpers_doc.py --header` 直接生成 `bpf_helper_defs.h` |
-| `build/templates/bpf/ohos_bpf.gni` | `host_os == "mac"` 时追加 `-I//device/board/edu/virt/bpf_compat` |
-| `build/misc/mac/find_sdk.py` 等 | 早前一次性修正（见 .applied 标记） |
+**文件回放机制**: 仓库以"OHOS 源码相对路径"镜像被修改的文件，
+`scripts/apply_patches.sh` 将其覆盖回源码树 (原版自动备份到 `.opencode/mac-backup/`)。
+`.applied` 是空标记文件，仅表示该补丁已被应用，不参与回放。
 
-### 产品板级（device/board/edu/virt）
-| 文件 | 修改 |
-| --- | --- |
-| `device/board/edu/virt/bpf_compat/` | BPF 宿主编译用 stub：`sys/socket.h`(AF_INET/INET6 等)、`string.h` |
-| `device/board/edu/virt/kernel/build_kernel.sh` | MAKE_OPTIONS: `HOSTCFLAGS=-I${KERNEL_BUILD_ROOT}/hostelf` + `HOSTLDFLAGS=-L/opt/homebrew/opt/openssl@3/lib` |
+## 文档导航
 
-### 图形编译链 (graphic_3d)
-| 文件 | 修改 |
-| --- | --- |
-| `LumeShaderCompiler/build.sh`、`lumeassetcompiler/build.sh` | 路径改为 darwin prebuilts (`darwin-universal`, `darwin-arm64`, `darwin-x86`) |
-| `shader.compile.toolchain.darwin.cmake` | `/usr/bin/clang` + `-include stdint.h`；不能加 `-isystem c++/v1` |
-| `LumeShaderCompiler/CMakeLists.txt` | `KHRONOS_KHR` → `third_party/openGLES/api` |
-| `lumeassetcompiler/src/main.cpp` | `std::set<dirent*>` → `{name, isDir}` 副本（macOS readdir 缓冲区复用导致文件名损坏） |
-| `third_party/openGLES/api/KHR/khrplatform.h` | 补齐缺失头 |
-
-### 三方库
-| 文件 | 修改 |
-| --- | --- |
-| `third_party/{libinput,libevdev,mtdev}/patch/apply_patch.sh` | `cp -fra` → `cp -fR`（BSD cp 不接受 -r + -R） |
-| `kernel/linux/linux-6.6/hostelf/` | 宿主编译用 `elf.h`、`endian.h`、openssl 软链 |
-| `tools/build/feature/test-bpf.c` (linux-5.10) | darwin 特征检测时 `syscall()` 恒失败 → 改为 `return 0` |
-
-### Prebuilts 修补（不修改源码，需 setup.sh 执行）
-| 位置 | 操作 |
-| --- | --- |
-| `prebuilts/ark_tools/ark_js_prebuilts/llvm_prebuilts_aarch64` | symlink → `llvm_prebuilts_darwin_arm64` |
-| `.../llvm_prebuilts_darwin_arm64/llvm/include/llvm/IR/BuiltinGCs.h` | 转发头 → `../CodeGen/BuiltinGCs.h`（LLVM12 无 IR 版本） |
-| `prebuilts/rustc/darwin-arm64` | symlink → `darwin-aarch64` |
-| `prebuilts/rustc/darwin-aarch64/current/lib/rustlib/aarch64-unknown-linux-ohos/lib/` | 完整 std rlibs（20240429 与 rustc commit 匹配） |
-| `prebuilts/develop_tools/bpftool/bin/bpftool` | darwin 构建产物（build_bpftool.sh 生成） |
-
-### 主机依赖 (Homebrew)
-bison, make (gnu), gnu-sed, openjdk@17, libelf, pkg-config, ccache, nproc/python shims
-
-## 第二轮修复清单 (2026-08-08, attempt 87-169)
-- updater lexer: `LexerInput` 签名 int→size_t (flex 2.6)
-- iptables: xt_dscp/xt_mark/xt_tcpmss/ipt_TTL 头补全 + `-Wno-error=nonportable-include-path`
-- e2fsprogs: 批量 `__has_include` 门 (script/patch_e2fsprogs_has_include.py), sysmacros/linux 头, e2fsdroid _GNU_SOURCE/vfs_cap_data, getsectsize 块条件修正
-- SDK innerkits: check.txt 从输出目录生成 (script/gen_sdk_checkfiles.py), gen_sdk_build_file.py 跳过接口校验
-- rust: c_utils cxx 桥接 mac 启用 (BUILD.gn), llvm-strip host 路径, tests 跳过, proc_macro 残留清理
-- compile_standard_whitelist.json: 补充跨 part 依赖白名单 (deps/external_deps 校验保留)
-- hilog: __MAC__/__WINDOWS__ 平台分支交叉编译兼容, 平台库仅宿主工具链编译
-- ffmpeg: ohos_config.sh `wc -l`/`sed -i ''`/`sed -i.bak` 兼容
-- selinux: libselinux/version 改名避免 <version> 遮蔽
-- dsoftbus: Session.h 大小写统一小写
-- hdc: exec_sudo 条件, GetDevUint 非 HARMONY_PROJECT 分支
-- runtime_core: -static-libstdc++ mac 去掉, defect_scan_aux 补 hilog 依赖
-- jsvm(node/v8): /proc/cpuinfo 回退, HOST_OS=mac, cflags_host isysroot + linux 子目录头, v8 MADV_DONTFORK __APPLE__ 保护
-- 批量占位: 仓库缺失文件 (hap/资源/源码) 统一占位 (见下方说明)
-
-## 第三轮修复清单 (2026-08-08 晚, attempt 197-222)
-- jsvm(node/v8): 宿主构建完整打通 - gyp make.py (start-group/ElfW/-all_load/普通归档), gyp_node.py (-Dhost_os=mac),
-  v8.gyp (platform 源选择/trap-handler arm64), build_jsvm_inter.sh (cpuinfo/HOST_OS/cflags_host/dylib 拷贝),
-  platform-posix.cc (__APPLE__ 特例), platform-linux.cc (RemapShared), libjsvm.108.dylib→libjsvm.so
-- ohpm/hvigor: 下载 oh-command-line-tools 5.0.2 (repo.huaweicloud.com), node-v16.20.2-darwin-x64 真实二进制
-- hap: dlp_manager/permission_manager 改 ohos_prebuilt_etc 占位 (避免 SDK 依赖)
-- kernel ko: make_ko.sh 路径 arm64_virt + 签名跳过
-- 宿主头 shim (override/third_party): elf.h(hostelf), link.h(ElfW), endian.h, linux/magic.h, sys/statfs.h,
-  sys/statfs 双平台, securec.h/securectype.h, hitrace_meter.h, windows.h
-- FreeBSD fts.c: sys/statfs.h + linux/magic.h shim
-- unwinder 宿主工具: ElfW 大小写修正 (Elf64_Addr)
-- 构建推进: 内核✓ v8/node✓ SDK接口✓ hap链✓ 宿主工具链收尾中
-
-## 已知限制 / 未完成
-- [ ] 全量构建到镜像产出（当前停在 hiebpf skeleton / bpftool 之后的下一个失败点）
-- [x] darwin 构建 bpftool（2026-08-07 完成：libbpf.a + bpftool 链接成功，`gen skeleton` 验证通过）
-  - 关键发现: macOS `ld -r` 会把 `-fvisibility=hidden` 的符号降级为局部 → libbpf Makefile darwin 分支去掉该 flag
-- [ ] 部分 stub 头只覆盖 libbpf 编译所需最小集
-
-## 第四轮修复清单 (2026-08-12, 构建成功 + 系统启动)
-
-**全量构建通过** (attempt 463, `arm64_virt build success`), 镜像完整产出, QEMU 启动进入系统:
-内核启动 → 分区挂载 → switch_root → foundation/render_service/wms/appfwk/bms 全部就绪,
-开机动画完整播放 (VNC 查看)。
-
-### 构建期修复
-- **sysmacros.h darwin shim 污染交叉编译**: override/third_party/sys/sysmacros.h 的 Darwin 格式
-  makedev 被 aarch64-linux-ohos 目标编译误用, 设备节点 dev 号错乱 (major/minor 编码不同)
-  → 按 `__linux__` 区分 Linux/darwin 编码
-- **mesa 22.2.4 在 darwin 上完整重建** (meson cross 配置适配, 见 scripts/rebuild_mesa.sh):
-  - eglapi.c 导出 KHR 符号 (eglCreateImageKHR 等, mesa 22.2 默认 static 不导出)
-  - 补 glEGLImageTargetTexture2DOES stub
-  - pan_props.c 重复定义、git_sha1_gen.py git 挂起、expat/zstd 依赖处理
-- **mesa3d symlink 缺失**: libEGL.so.1/libGLESv2.so.2/libgbm 等 12 个链接未生成 → 手动补齐
-- **/data/storage 目录树缺失** (foundation 建目录失败) → 首次启动前手动初始化
-
-### 运行期修复 (QEMU 启动)
-- **CFI 类型表不匹配** (foundation abort): libmmi-client 编译时缺 `-fsanitize=cfi -fsanitize-cfi-cross-dso`
-  标志 (cflags 与 libeventhandler 不对称) → 手动重编 (scripts/rebuild_utd.sh 同法)
-- **UDMF utd_client 线程栈溢出**: InitDescriptors() 470 元素大初始化列表单帧栈 148KB >
-  musl 默认线程栈 128KB → 拆分列表 (preset_type_descriptors.cpp)
-- **appspawn dlopen ace 模块崩溃链** (持续排查中):
-  - /system/lib64 缺 platformsdk 库的顶层链接 → 批量创建 459 个 symlink
-  - **musl 缺 ANDROID_RELA (packed reloc) 支持**: OHOS 链接用 `--pack-dyn-relocs=android+relr`,
-    musl 原本忽略 DT_ANDROID_RELA (0x60000011) → ABS64/GLOB_DAT 重定位全部丢失 → GOT 跳转垃圾。
-    新版 musl (ldso/linux/dynlink.c) 已内置解码器但调用 tag 错误 (DT_ANDROID_REL) → 改为
-    DT_ANDROID_RELA 并重建 ldso+libc (scripts/rebuild_ldso.sh, rebuild_libc.sh)
-  - 剩余: libimage_native 加载时跳转 .dynstr (内存损坏), 待继续排查
-- **QEMU 启动**: scripts/run_qemu.sh (VNC :21 + 密码 123456, monitor socket /tmp/qemu_mon.sock)
-
-### 已知限制 / 未完成
-- [x] 全量构建 + 镜像产出
-- [x] 系统启动 (核心服务就绪, 开机动画)
-- [ ] launcher/桌面: appspawn ace 模块 dlopen 崩溃 (libimage_native .dynstr 跳转), 排查中
+- 想知道改了哪些文件、为什么 → `docs/PROGRESS.md`
+- 想接手继续开发 (launcher 崩溃) → `docs/HANDOVER.md`
+- 想复现构建/重跑脚本 → `scripts/README.md`
