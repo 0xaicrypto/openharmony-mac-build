@@ -88,7 +88,7 @@ typedef int __kernel_suseconds_t;
 #include <unistd.h>
 #include <sys/epoll.h>
 
-__attribute__((weak)) int dup3(int oldfd, int newfd, int flags)
+__attribute__((__weak__)) int dup3(int oldfd, int newfd, int flags)
 {
 	if (oldfd == newfd) {
 		errno = EINVAL;
@@ -103,21 +103,21 @@ __attribute__((weak)) int dup3(int oldfd, int newfd, int flags)
 	return newfd;
 }
 
-__attribute__((weak)) int epoll_create1(int flags)
+__attribute__((__weak__)) int epoll_create1(int flags)
 {
 	(void)flags;
 	errno = ENOSYS;
 	return -1;
 }
 
-__attribute__((weak)) int epoll_ctl(int epfd, int op, int fd, struct epoll_event *ev)
+__attribute__((__weak__)) int epoll_ctl(int epfd, int op, int fd, struct epoll_event *ev)
 {
 	(void)epfd; (void)op; (void)fd; (void)ev;
 	errno = ENOSYS;
 	return -1;
 }
 
-__attribute__((weak)) int epoll_wait(int epfd, struct epoll_event *ev, int maxevents, int timeout)
+__attribute__((__weak__)) int epoll_wait(int epfd, struct epoll_event *ev, int maxevents, int timeout)
 {
 	(void)epfd; (void)ev; (void)maxevents; (void)timeout;
 	errno = ENOSYS;

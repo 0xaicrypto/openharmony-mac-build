@@ -124,3 +124,39 @@ bison, make (gnu), gnu-sed, openjdk@17, libelf, pkg-config, ccache, nproc/python
 - [x] darwin 构建 bpftool（2026-08-07 完成：libbpf.a + bpftool 链接成功，`gen skeleton` 验证通过）
   - 关键发现: macOS `ld -r` 会把 `-fvisibility=hidden` 的符号降级为局部 → libbpf Makefile darwin 分支去掉该 flag
 - [ ] 部分 stub 头只覆盖 libbpf 编译所需最小集
+
+## 第四轮修复清单 (2026-08-12, 构建成功 + 系统启动)
+
+**全量构建通过** (attempt 463, `arm64_virt build success`), 镜像完整产出, QEMU 启动进入系统:
+内核启动 → 分区挂载 → switch_root → foundation/render_service/wms/appfwk/bms 全部就绪,
+开机动画完整播放 (VNC 查看)。
+
+### 构建期修复
+- **sysmacros.h darwin shim 污染交叉编译**: override/third_party/sys/sysmacros.h 的 Darwin 格式
+  makedev 被 aarch64-linux-ohos 目标编译误用, 设备节点 dev 号错乱 (major/minor 编码不同)
+  → 按 `__linux__` 区分 Linux/darwin 编码
+- **mesa 22.2.4 在 darwin 上完整重建** (meson cross 配置适配, 见 scripts/rebuild_mesa.sh):
+  - eglapi.c 导出 KHR 符号 (eglCreateImageKHR 等, mesa 22.2 默认 static 不导出)
+  - 补 glEGLImageTargetTexture2DOES stub
+  - pan_props.c 重复定义、git_sha1_gen.py git 挂起、expat/zstd 依赖处理
+- **mesa3d symlink 缺失**: libEGL.so.1/libGLESv2.so.2/libgbm 等 12 个链接未生成 → 手动补齐
+- **/data/storage 目录树缺失** (foundation 建目录失败) → 首次启动前手动初始化
+
+### 运行期修复 (QEMU 启动)
+- **CFI 类型表不匹配** (foundation abort): libmmi-client 编译时缺 `-fsanitize=cfi -fsanitize-cfi-cross-dso`
+  标志 (cflags 与 libeventhandler 不对称) → 手动重编 (scripts/rebuild_utd.sh 同法)
+- **UDMF utd_client 线程栈溢出**: InitDescriptors() 470 元素大初始化列表单帧栈 148KB >
+  musl 默认线程栈 128KB → 拆分列表 (preset_type_descriptors.cpp)
+- **appspawn dlopen ace 模块崩溃链** (持续排查中):
+  - /system/lib64 缺 platformsdk 库的顶层链接 → 批量创建 459 个 symlink
+  - **musl 缺 ANDROID_RELA (packed reloc) 支持**: OHOS 链接用 `--pack-dyn-relocs=android+relr`,
+    musl 原本忽略 DT_ANDROID_RELA (0x60000011) → ABS64/GLOB_DAT 重定位全部丢失 → GOT 跳转垃圾。
+    新版 musl (ldso/linux/dynlink.c) 已内置解码器但调用 tag 错误 (DT_ANDROID_REL) → 改为
+    DT_ANDROID_RELA 并重建 ldso+libc (scripts/rebuild_ldso.sh, rebuild_libc.sh)
+  - 剩余: libimage_native 加载时跳转 .dynstr (内存损坏), 待继续排查
+- **QEMU 启动**: scripts/run_qemu.sh (VNC :21 + 密码 123456, monitor socket /tmp/qemu_mon.sock)
+
+### 已知限制 / 未完成
+- [x] 全量构建 + 镜像产出
+- [x] 系统启动 (核心服务就绪, 开机动画)
+- [ ] launcher/桌面: appspawn ace 模块 dlopen 崩溃 (libimage_native .dynstr 跳转), 排查中

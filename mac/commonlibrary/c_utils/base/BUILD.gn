@@ -228,6 +228,9 @@ if (!is_arkui_x) {
     include_dirs = [
       "include",
       "${target_gen_dir}",
+      # darwin port: cxxbridge 生成的 cc 内 include 路径相对 rs 源文件,
+      # 生成的 cc 在 gen 目录深度不同, 加源目录 -I 使其相对源文件正确解析
+      rebase_path("src/rust"),
     ]
     deps = [
       ":cxx_rust_gen",
@@ -241,7 +244,7 @@ if (!is_arkui_x) {
 
 if (!is_arkui_x) {
   ohos_rust_shared_library("utils_rust") {
-    if (host_os == "linux") {
+    if (host_os == "linux" || host_os == "mac") {
       sources = [
         "src/rust/ashmem.rs",
         "src/rust/directory_ex.rs",
@@ -249,6 +252,7 @@ if (!is_arkui_x) {
         "src/rust/lib.rs",
       ]
       deps = [
+    ":utils_rust_static",
         ":utils_static_cxx_rust",
         "//third_party/rust/crates/cxx:lib",
       ]
@@ -285,5 +289,52 @@ if (!is_arkui_x) {
       ]
     }
   }
+# darwin port: darwin rustc 无法加载 ELF dylib, 提供同名 rlib 供依赖方编译期使用
+ohos_rust_static_library("utils_rust_static") {
+    if (host_os == "linux" || host_os == "mac") {
+      sources = [
+        "src/rust/ashmem.rs",
+        "src/rust/directory_ex.rs",
+        "src/rust/file_ex.rs",
+        "src/rust/lib.rs",
+      ]
+      deps = [
+        ":utils_static_cxx_rust",
+        "//third_party/rust/crates/cxx:lib",
+      ]
+      crate_root = "src/rust/lib.rs"
+      crate_name = "utils_rust_static"
+      
+      output_extension = "dylib.so"
+      subsystem_name = "commonlibrary"
+      part_name = "c_utils"
+      install_images = [
+        "system",
+        "updater",
+      ]
+    } else {
+      sources = [
+        "src/rust/ashmem.rs",
+        "src/rust/directory_ex.rs",
+        "src/rust/file_ex.rs",
+        "src/rust/lib.rs",
+      ]
+      deps = [
+        ":utils_static_cxx_rust",
+        "//third_party/rust/crates/cxx:lib",
+      ]
+      crate_root = "src/rust/lib.rs"
+      crate_name = "utils_rust"
+      
+      output_extension = "dylib.so"
+      subsystem_name = "commonlibrary"
+      part_name = "c_utils"
+      install_images = [
+        "system",
+        "updater",
+      ]
+    }
+  }
+
 }
 ###############################################################################

@@ -1,0 +1,88 @@
+# Copyright (c) 2021-2022 Huawei Device Co., Ltd.
+# Licensed under the Apache License, Version 2.0 (the "License");
+# you may not use this file except in compliance with the License.
+# You may obtain a copy of the License at
+#
+#     http://www.apache.org/licenses/LICENSE-2.0
+#
+# Unless required by applicable law or agreed to in writing, software
+# distributed under the License is distributed on an "AS IS" BASIS,
+# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+# See the License for the specific language governing permissions and
+# limitations under the License.
+
+import("//build/ohos.gni")
+import("../../eventhandler.gni")
+import("inner_api_sources.gni")
+
+config("libeventhandler_config") {
+  include_dirs = [
+    "${inner_api_path}",
+    "include",
+  ]
+}
+
+config("public_libeventhandler_config") {
+  include_dirs = [ "${inner_api_path}" ]
+}
+
+ohos_shared_library("libeventhandler") {
+  sanitize = {
+    integer_overflow = true
+    ubsan = true
+    boundary_sanitize = true
+    cfi = true
+    cfi_cross_dso = false
+    debug = false
+    blocklist = "./handler_blocklist.txt"
+  }
+  branch_protector_ret = "pac_ret"
+
+  all_dependent_configs = [ ":libeventhandler_config" ]
+  cflags_cc = []
+  sources = inner_api_sources
+
+  public_configs = [
+    ":public_libeventhandler_config",
+    ":libeventhandler_config",
+  ]
+
+  external_deps = [
+    "c_utils:utils",
+    "hilog:libhilog",
+    "hitrace:libhitracechain",
+  ]
+
+  defines = []
+  if (resource_schedule_usage) {
+    external_deps += [ "ipc:ipc_single" ]
+    external_deps += [ "resource_schedule_service:ressched_client" ]
+    defines += [ "RES_SCHED_ENABLE" ]
+  }
+
+  if (has_hichecker_native_part) {
+    cflags_cc += [ "-DHAS_HICHECKER_NATIVE_PART" ]
+    external_deps += [ "hichecker:libhichecker" ]
+  }
+
+  if (eh_hitrace_usage) {
+    cflags_cc += [ "-DEH_HITRACE_METER_ENABLE" ]
+  }
+
+  if (eventhandler_ffrt_usage) {
+    cflags_cc += [ "-DFFRT_USAGE_ENABLE" ]
+    external_deps += [ "ffrt:libffrt" ]
+  }
+
+  install_images = [
+    system_base_dir,
+    updater_base_dir,
+  ]
+  subsystem_name = "notification"
+  innerapi_tags = [
+    "platformsdk",
+    "chipsetsdk_indirect",
+    "sasdk",
+  ]
+  part_name = "eventhandler"
+}

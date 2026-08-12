@@ -4,6 +4,11 @@
 
 import("//build/config/c++/c++.gni")
 import("//build/config/clang/clang.gni")
+
+# darwin port: mac 上构建的 linux 工具链 (clang_x64) 实际链接 Mach-O, GNU ld 参数不支持
+_mac_host_linux_gnu_link = host_os == "mac" && current_os == "linux"
+# 顶层变量供 deferred config body 使用, 显式声明避免 gn 检查报 unused
+not_needed([ "_mac_host_linux_gnu_link" ])
 import("//build/config/compiler/compiler.gni")
 import("//build/config/coverage/coverage.gni")
 import("//build/config/sanitizers/sanitizers.gni")
@@ -242,7 +247,8 @@ config("compiler") {
     # Linker warnings.
     if (fatal_linker_warnings && !(is_chromeos && current_cpu == "arm") &&
         !(is_ohos && use_order_profiling) && !is_mac && current_os != "aix" &&
-        !is_mingw && !is_ios) {
+        !is_mingw && !is_ios &&
+        !(host_os == "mac" && current_os == "linux")) {
       ldflags += [ "-Wl,--fatal-warnings" ]
     }
   } else {
@@ -297,7 +303,9 @@ config("compiler") {
       # id, so explicitly enable it in official builds. It's not needed in
       # unofficial builds and computing it does slow down the link, so go with
       # faster links in unofficial builds.
-      ldflags += [ "-Wl,--build-id=md5" ]
+      if (!_mac_host_linux_gnu_link) {
+        ldflags += [ "-Wl,--build-id=md5" ]
+      }
     }
 
     if (!is_ohos && !is_ohos) {
@@ -388,7 +396,7 @@ config("compiler") {
     ldflags += [ "-fuse-ld=bfd" ]
   }
 
-  if (use_icf) {
+  if (use_icf && !_mac_host_linux_gnu_link) {
     ldflags += [ "-Wl,--icf=all" ]
   }
 
@@ -688,6 +696,10 @@ config("compiler_cpu_abi") {
   cflags = []
   ldflags = []
   defines = []
+  if (host_os == "mac") {
+    # darwin port: 交叉编译的 linux uapi 头与 mac 头宏冲突, 降级为 warning
+    cflags += [ "-Wno-error=macro-redefined" ]
+  }
 
   if (is_posix && !is_mac && !is_ios) {
     # CPU architecture. We may or may not be doing a cross compile now, so for
@@ -1070,7 +1082,8 @@ config("no_rtti") {
 # (de)allocate memory on a different heap, which would spell trouble if pointers
 # to heap-allocated memory are passed over shared library boundaries.
 config("export_dynamic") {
-  if (is_desktop_linux || export_libcxxabi_from_executables) {
+  if ((is_desktop_linux || export_libcxxabi_from_executables) &&
+      !_mac_host_linux_gnu_link) {
     ldflags = [ "-rdynamic" ]
   }
 }
@@ -1225,7 +1238,9 @@ if (is_win) {
       "-Wl,-O2",
     ]
     if (!is_mingw) {
-      common_optimize_on_ldflags += [ "-Wl,--gc-sections" ]
+      if (!_mac_host_linux_gnu_link) {
+        common_optimize_on_ldflags += [ "-Wl,--gc-sections" ]
+      }
     }
   }
 }
