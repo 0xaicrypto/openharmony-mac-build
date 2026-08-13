@@ -40,7 +40,7 @@ PYEOF
   ../../prebuilts/clang/ohos/darwin-arm64/llvm/bin/clang++ $LDFLAGS \
   -o "exe.unstripped/startup/appspawn/appspawn" \
   obj/third_party/musl/usr/lib/aarch64-linux-ohos/Scrt1.o obj/third_party/musl/usr/lib/aarch64-linux-ohos/crti.o \
-  @/tmp/as.rsp $LIBS \
+  @/tmp/as.rsp $LIBS -Wl,--export-dynamic \
   obj/third_party/musl/usr/lib/aarch64-linux-ohos/crtn.o
 echo "=== LINKED ==="
 ls -la startup/appspawn/appspawn exe.unstripped/startup/appspawn/appspawn

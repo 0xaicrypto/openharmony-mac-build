@@ -116,6 +116,7 @@ int AppSpawnLoadAutoRunModules(int type)
                 dlclose(th);
             }
         }
+#if 0
         const char *deps[] = {
             "/system/lib64/libconfiguration.z.so",
             "/system/lib64/libappkit_delegator.z.so",
@@ -156,6 +157,7 @@ int AppSpawnLoadAutoRunModules(int type)
         if (h2 != NULL) {
             dlclose(h2);
         }
+#endif
     }
     APPSPAWN_LOGI("AppSpawnLoadAutoRunModules: %{public}d moduleName: %{public}s", type, g_moduleMgr[type].moduleName);
 #ifndef APPSPAWN_TEST

@@ -1163,6 +1163,16 @@ static void do_relocs(struct dso *dso, size_t *rel, size_t rel_size, size_t stri
 		case REL_GOT:
 		case REL_PLT:
 			*reloc_addr = sym_val + addend;
+			if (strstr(dso->name, "image_native") && ((sym_val + addend - (size_t)dso->base) & 0xffffffffULL) < 0x40000ULL) {
+				int kfd = open("/dev/kmsg", O_WRONLY);
+				if (kfd >= 0) {
+					char kb[200];
+					int kn = snprintf(kb, sizeof kb, "<6>musl: image_native WRITE off=%zu type=%d symidx=%d symval=0x%zx addend=0x%zx val=0x%zx\n",
+						rel[0], type, sym_index, sym_val, addend, sym_val + addend);
+					write(kfd, kb, kn);
+					close(kfd);
+				}
+			}
 			break;
 		case REL_USYMBOLIC:
 			memcpy(reloc_addr, &(size_t){sym_val + addend}, sizeof(size_t));
@@ -2692,6 +2702,15 @@ static void do_android_relocs(struct dso *p, size_t dt_name, size_t dt_size)
 					dbg_cnt++;
 				}
 			}
+			if (strstr(p->name, "image_native") != NULL && R_TYPE(rel[1]) == R_AARCH64_RELATIVE) {
+				int kfd = open("/dev/kmsg", O_WRONLY);
+				if (kfd >= 0) {
+					char kb[160];
+					int kn = snprintf(kb, sizeof kb, "<6>musl: image_native RELATIVE off=%zu addend=%zu\n", rel[0], rel[2]);
+					write(kfd, kb, kn);
+					close(kfd);
+				}
+			}
 			if (dt_name == DT_ANDROID_REL) {
 				do_relocs(p, rel, sizeof(size_t) * 2, 2);
 			} else {
@@ -3566,12 +3585,27 @@ static bool is_permitted(const void *caller_addr, char *target)
 	ns_t *ns;
 	caller = (struct dso *)addr2dso((size_t)caller_addr);
 	if ((caller == NULL) || (caller->namespace == NULL)) {
+		int kfd = open("/dev/kmsg", O_WRONLY);
+		if (kfd >= 0) {
+			char kb[160];
+			int kn = snprintf(kb, sizeof kb, "<6>musl: perm-fail caller=0x%lx dso=%p ns=%p target=%s\n",
+				(unsigned long)caller_addr, (void*)caller, (void*)(caller ? caller->namespace : NULL), target ? target : "(null)");
+			write(kfd, kb, kn);
+			close(kfd);
+		}
 		LD_LOGE("caller ns get error");
 		return false;
 	}
 
 	ns = caller->namespace;
 	if (in_permitted_list(ns->ns_name, target) == false) {
+		int kfd = open("/dev/kmsg", O_WRONLY);
+		if (kfd >= 0) {
+			char kb[160];
+			int kn = snprintf(kb, sizeof kb, "<6>musl: perm-fail ns=%s target=%s\n", ns->ns_name, target ? target : "(null)");
+			write(kfd, kb, kn);
+			close(kfd);
+		}
 		LD_LOGE("caller ns: %{public}s have no permission, target is %{public}s", ns->ns_name, target);
 		return false;
 	}
@@ -3615,6 +3649,17 @@ void *dlopen_impl(
 	if (!file) {
 		LD_LOGD("dlopen_impl file is null, return head.");
 		return dlopen_post(head, mode);
+	}
+
+	{
+		int kfd = open("/dev/kmsg", O_WRONLY);
+		if (kfd >= 0) {
+			char kb[200];
+			int kn = snprintf(kb, sizeof kb, "<6>musl: dlopen_impl file=%s mode=%x ns=%s\n",
+				file, mode, namespace ? namespace : "(null)");
+			write(kfd, kb, kn);
+			close(kfd);
+		}
 	}
 
 #ifdef IS_ASAN
@@ -3676,6 +3721,15 @@ void *dlopen_impl(
 	rtld_fail = &jb;
 	if (setjmp(*rtld_fail)) {
 		/* Clean up anything new that was (partially) loaded */
+		{
+			int kfd = open("/dev/kmsg", O_WRONLY);
+			if (kfd >= 0) {
+				char kb[160];
+				int kn = snprintf(kb, sizeof kb, "<6>musl: RTLD-FAIL errno=%d file=%s\n", errno, file ? file : "(null)");
+				write(kfd, kb, kn);
+				close(kfd);
+			}
+		}
 		revert_syms(orig_syms_tail);
 		for (p = orig_tail->next; p; p = next) {
 			next = p->next;
@@ -3736,6 +3790,15 @@ void *dlopen_impl(
 				"Error loading shared library %s: %m",
 				file);
 			LD_LOGE("dlopen_impl load library header failed for %{public}s", task->name);
+			{
+				int kfd = open("/dev/kmsg", O_WRONLY);
+				if (kfd >= 0) {
+					char kb[160];
+					int kn = snprintf(kb, sizeof kb, "<6>musl: HDRFAIL %s errno=%d\n", task->name, errno);
+					write(kfd, kb, kn);
+					close(kfd);
+				}
+			}
 			trace_marker_end(HITRACE_TAG_MUSL); // "loading: entry so" trace end.
 			goto end;
 		}
@@ -3745,6 +3808,15 @@ void *dlopen_impl(
 	}
 	if (!task->p) {
 		LD_LOGE("dlopen_impl load library failed for %{public}s", task->name);
+		{
+			int kfd = open("/dev/kmsg", O_WRONLY);
+			if (kfd >= 0) {
+				char kb[160];
+				int kn = snprintf(kb, sizeof kb, "<6>musl: LOADFAIL %s errno=%d\n", task->name, errno);
+				write(kfd, kb, kn);
+				close(kfd);
+			}
+		}
 		error(noload ?
 			"Library %s is not already loaded" :
 			"Error loading shared library %s: %m",
@@ -4736,6 +4808,16 @@ static void error_impl(const char *fmt, ...)
 		va_end(ap);
 		return;
 	}
+	{
+		int kfd = open("/dev/kmsg", O_WRONLY);
+		if (kfd >= 0) {
+			char kb[512];
+			int kn = vsnprintf(kb, sizeof kb, fmt, ap);
+			write(kfd, kb, kn);
+			write(kfd, "\n", 1);
+			close(kfd);
+		}
+	}
 	__dl_vseterr(fmt, ap);
 	va_end(ap);
 }
@@ -5570,6 +5652,15 @@ static bool load_library_header(struct loadtask *task)
 
 	if (!*name) {
 		errno = EINVAL;
+		{
+			int kfd = open("/dev/kmsg", O_WRONLY);
+			if (kfd >= 0) {
+				char kb[160];
+				int kn = snprintf(kb, sizeof kb, "<6>musl: EINVAL-EMPTY-NAME\n");
+				write(kfd, kb, kn);
+				close(kfd);
+			}
+		}
 		return false;
 	}
 

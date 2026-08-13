@@ -2844,3 +2844,10 @@ glEGLImageTargetTexture2DOES(unsigned int target, void *image)
    (void)target;
    (void)image;
 }
+
+/* OHOS graphic_2d wrapper symbols required by app frameworks (libappkit_native etc) */
+__attribute__((visibility("default"))) void _ZN4OHOS14EglSetCacheDirENSt3__h12basic_stringIcNS0_11char_traitsIcEENS0_9allocatorIcEEEE(void *dir);
+__attribute__((visibility("default"))) void _ZN4OHOS14EglSetCacheDirENSt3__h12basic_stringIcNS0_11char_traitsIcEENS0_9allocatorIcEEEE(void *dir)
+{
+   (void)dir;
+}

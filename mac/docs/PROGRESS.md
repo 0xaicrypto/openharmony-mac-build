@@ -98,3 +98,50 @@ bison, make (gnu), gnu-sed, openjdk@17, libelf, pkg-config, ccache, nproc/python
     → 改为 DT_ANDROID_RELA 并重建 ldso+libc (`scripts/rebuild_ldso.sh`, `scripts/rebuild_libc.sh`)
   - 剩余: libimage_native 加载时跳转 .dynstr (内存损坏), 待继续排查
 - **QEMU 启动**: `scripts/run_qemu.sh` (VNC :21 + 密码 123456, monitor socket /tmp/qemu_mon.sock)
+
+## 第五轮 (2026-08-13, attempt 464+): 应用框架 + 图形栈打通
+
+### appspawn 模块链（从"静默失败"到"全部加载成功"）
+- **症状**: 所有 appspawn 模块 dlopen 返回 NULL，dlerror 为空，errno=22 (EINVAL)
+- **根因**: 重编 appspawn 时链接命令丢了 `-Wl,--export-dynamic`。OHOS 的模块机制
+  要求主程序把 `AddServerStageHook`/`GetAppSpawnMsgInfo`/`AddAppSpawnHook` 等符号
+  导出到 .dynsym，模块 dlopen 重定位才能解析；musl 对解析失败**静默 longjmp**（dlerror 为空）
+- **修复**: `rebuild_appspawn.sh` 链接参数加 `-Wl,--export-dynamic`
+  （也可用官方 version-script: `libappspawn_stub_versionscript.map.txt`）
+- **调试方法**: `error_impl()` 直接写 /dev/kmsg（musl 的 `Error relocating ...: symbol not found`
+  会打出来，这是最终定位手段）
+
+### Mesa libEGL 补 OHOS wrapper 符号
+- **症状**: `Error relocating libappkit_native.z.so: EglSetCacheDir: symbol not found`
+- **背景**: 我们早前用 mesa 构建直接顶替了 OHOS 的 libEGL wrapper，wrapper 特有的
+  `OHOS::EglSetCacheDir` 符号缺失
+- **修复**: `src/egl/main/eglapi.c` 加 stub 并 `__attribute__((visibility("default")))`
+  导出（`-fvisibility=hidden` 默认隐藏）
+- **注意**: mesa 代码里混用 `%{public}` 格式符（OHOS 风格），标准 vsnprintf 会失败，
+  `egllog.c` 加了 sanitize（`%{public}` → `%`）
+
+### Rust std 版本不匹配
+- **症状**: `_ZN5alloc7raw_vec17capacity_overflow17h78fe...: symbol not found`
+  （libmmi_rust_key_config / libylong_cloud_extension 等）
+- **根因**: 镜像 `libstd.dylib.so` 来自 `prebuilts/rustc/linux-x86_64`（官方 Linux 构建），
+  但本机构建的 rust 库用的 darwin rustc → 符号 hash 不同
+- **修复**: 部署 `prebuilts/rustc/darwin-aarch64/current/lib/rustlib/
+  aarch64-unknown-linux-ohos/lib/libstd.dylib.so`
+
+### EGL 初始化失败 (EGL_NOT_INITIALIZED) 排查链
+1. **libdrm dev_t 编码**: 旧 libdrm（sysmacros 修复前构建）`major()/minor()` 解析错 →
+   `drmGetDevices2` 返回 0 → 用修复后版本重编 `thirdparty/libdrm/libdrm.so` 替换
+2. **libdrm.so 搜索路径**: 库在 `system/lib64/chipset-sdk/`，musl 默认搜不到 →
+   `system/lib64` 根加软链
+3. **CFI 类型表冲突**: OHOS 构建的 `kms_swrast_dri.so`（14MB）带 CFI 检查，
+   与无 CFI 的 libEGL 间接调用 → `__cfi_fail_report` → abort (SIGABRT)
+   → **rebuild_mesa.sh 改为 `-Dgallium-drivers=swrast -Dllvm=disabled`**
+   用自家无 CFI 的 `kms_swrast_dri.so`/`swrast_dri.so` 替换
+4. 最终验证: 自写 `test_egl` 工具（`eglInitialize = 1 (1.4)`，Mesa Project）
+
+### 显示输出（进行中）
+- **virtio-gpu**: guest 写 /dev/graphics/fb0 读回正确，但 QEMU 侧 VNC/screendump 全黑
+  （QEMU 9.2 自编译 与 11.0.3 均复现 → 帧传输/QEMU 显示子系统兼容问题）
+- **-vga std**: 帧缓冲显示正常（内核启动文本可见），但 HDI 合成器 `composer_host`
+  (hdf_devhost 12) 在 15s 与 render_service 交互时 SIGSEGV → RS 合成无法上屏
+- 自写工具: test_egl / test_drm / test_fb（验证 EGL/DRM/fbdev 各层，输出到 /dev/kmsg）

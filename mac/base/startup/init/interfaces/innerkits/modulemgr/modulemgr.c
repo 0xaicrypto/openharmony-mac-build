@@ -116,32 +116,85 @@ static void ModuleDestroy(ListNode *node)
 static MODULE_INSTALL_ARGS *currentInstallArgs = NULL;
 
 
-static void asdbg_segv_handler(int sig, siginfo_t *info, void *ctx)
+static int asdbg_in_map(unsigned long long addr, char *out, size_t outlen)
 {
-    ucontext_t *uc = (ucontext_t *)ctx;
-    FILE *f = fopen("/dev/kmsg", "w");
-    if (f) {
-        fprintf(f, "<6>appspawn-dbg: SIGSEGV pc=0x%llx addr=0x%llx sig=%d\n",
-            (unsigned long long)uc->uc_mcontext.pc, (unsigned long long)(uintptr_t)info->si_addr, sig);
-        fclose(f);
-    }
     FILE *m = fopen("/proc/self/maps", "r");
-    if (m) {
-        char line[256];
-        while (fgets(line, sizeof(line), m)) {
-            unsigned long long start, end;
-            if (sscanf(line, "%llx-%llx", &start, &end) == 2) {
-                if ((unsigned long long)uc->uc_mcontext.pc >= start && (unsigned long long)uc->uc_mcontext.pc < end) {
-                    f = fopen("/dev/kmsg", "w");
-                    if (f) {
-                        fprintf(f, "<6>appspawn-dbg: PC in: %s", line);
-                        fclose(f);
-                    }
-                    break;
-                }
+    if (!m)
+        return 0;
+    char line[512];
+    int found = 0;
+    while (fgets(line, sizeof(line), m)) {
+        unsigned long long start, end;
+        if (sscanf(line, "%llx-%llx", &start, &end) == 2) {
+            if (addr >= start && addr < end) {
+                snprintf(out, outlen, "%s", line);
+                found = 1;
+                break;
             }
         }
-        fclose(m);
+    }
+    fclose(m);
+    return found;
+}
+
+static void asdbg_segv_handler(int sig, siginfo_t *info, void *ctx)
+{
+    static int in_handler;
+    if (in_handler)
+        _exit(2);
+    in_handler = 1;
+    ucontext_t *uc = (ucontext_t *)ctx;
+    unsigned long long pc = (unsigned long long)uc->uc_mcontext.pc;
+    unsigned long long lr = (unsigned long long)uc->uc_mcontext.regs[30];
+    unsigned long long fp = (unsigned long long)uc->uc_mcontext.regs[29];
+    unsigned long long sp = (unsigned long long)uc->uc_mcontext.sp;
+    FILE *f = fopen("/dev/kmsg", "w");
+    if (f) {
+        fprintf(f, "<6>appspawn-dbg: SIGSEGV pc=0x%llx addr=0x%llx sig=%d lr=0x%llx fp=0x%llx sp=0x%llx\n",
+            pc, (unsigned long long)(uintptr_t)info->si_addr, sig, lr, fp, sp);
+        fclose(f);
+    }
+    char ml[512];
+    if (asdbg_in_map(pc, ml, sizeof(ml))) {
+        f = fopen("/dev/kmsg", "w");
+        if (f) {
+            fprintf(f, "<6>appspawn-dbg: PC in: %s", ml);
+            fclose(f);
+        }
+    }
+    if (asdbg_in_map(lr, ml, sizeof(ml))) {
+        f = fopen("/dev/kmsg", "w");
+        if (f) {
+            fprintf(f, "<6>appspawn-dbg: LR in: %s", ml);
+            fclose(f);
+        }
+    }
+    for (int i = 0; i < 24 && fp && (fp & 0xf) == 0; i++) {
+        unsigned long long *fr = (unsigned long long *)fp;
+        if (!asdbg_in_map(fp, ml, sizeof(ml)))
+            break;
+        unsigned long long fpc = fr[1];
+        unsigned long long ffp = fr[0];
+        f = fopen("/dev/kmsg", "w");
+        if (f) {
+            fprintf(f, "<6>appspawn-dbg: #%02d fp=0x%llx caller=0x%llx in: %s", i, fp, fpc, ml);
+            fclose(f);
+        }
+        fp = ffp;
+        if (fpc == 0)
+            break;
+    }
+    FILE *mm = fopen("/proc/self/maps", "r");
+    if (mm) {
+        char line[512];
+        while (fgets(line, sizeof(line), mm)) {
+            f = fopen("/dev/kmsg", "w");
+            if (f) {
+                fprintf(f, "<6>appspawn-dbg-map: %s", line);
+                fclose(f);
+            }
+        }
+        fclose(mm);
     }
     _exit(1);
 }
@@ -182,7 +235,7 @@ static void *ModuleInstall(MODULE_ITEM *module, int argc, const char *argv[])
     asdbg("ModuleInstall dlopen: %s", realPath);
     asdbg_install_segv_handler();
     handle = dlopen(realPath, RTLD_NOW | RTLD_GLOBAL);
-    asdbg("ModuleInstall dlopen done: %s -> %p", realPath, (void*)handle);
+    asdbg("ModuleInstall dlopen done: %s -> %p err=%s errno=%d", realPath, (void*)handle, handle ? "ok" : (dlerror() ? dlerror() : "noerr"), errno);
     currentInstallArgs = NULL;
     BEGET_CHECK_ONLY_ELOG(handle != NULL, "ModuleInstall path %s fail %d", realPath, errno);
     free(realPath);

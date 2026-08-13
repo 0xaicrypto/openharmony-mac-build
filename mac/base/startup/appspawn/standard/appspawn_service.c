@@ -194,6 +194,16 @@ static void HandleDiedPid(pid_t pid, uid_t uid, int status)
 APPSPAWN_STATIC void ProcessSignal(const struct signalfd_siginfo *siginfo)
 {
     APPSPAWN_LOGI("ProcessSignal signum %{public}d %{public}d", siginfo->ssi_signo, siginfo->ssi_pid);
+    {
+        int kfd = open("/dev/kmsg", O_WRONLY);
+        if (kfd >= 0) {
+            char kb[160];
+            int kn = snprintf(kb, sizeof kb, "<6>appspawn-dbg: SIG %d from pid %d uid %d\n",
+                siginfo->ssi_signo, siginfo->ssi_pid, siginfo->ssi_uid);
+            write(kfd, kb, kn);
+            close(kfd);
+        }
+    }
     switch (siginfo->ssi_signo) {
         case SIGCHLD: { // delete pid from app map
             pid_t pid;
