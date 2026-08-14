@@ -145,3 +145,22 @@ bison, make (gnu), gnu-sed, openjdk@17, libelf, pkg-config, ccache, nproc/python
 - **-vga std**: 帧缓冲显示正常（内核启动文本可见），但 HDI 合成器 `composer_host`
   (hdf_devhost 12) 在 15s 与 render_service 交互时 SIGSEGV → RS 合成无法上屏
 - 自写工具: test_egl / test_drm / test_fb（验证 EGL/DRM/fbdev 各层，输出到 /dev/kmsg）
+
+## 第五轮补充 (2026-08-13 晚): 显示输出深挖
+
+### 修复的隐藏问题
+- **libFillpSo.open.z.so GNU hash 表损坏**（链接产物 92/109 桶非法）
+  → find_sym 的 gnu_lookup 死循环 → 应用进程卡死。修复: 重新链接该库
+  （`--hash-style=sysv`，relink_fillp.sh）
+- **libfcodec 构造函数在应用进程卡死**（最后一个 ctor 指向 .got 数据区）
+  → musl do_init_fini 跳过 fcodec 的 init_array（编解码注册，launcher 不依赖）
+- **musl `__tl_lock` fork 继承锁死锁**（构建副本基于 clang_x64 原版恢复后加
+  tgkill ESRCH 抢占）
+
+### 定位链（应用进程卡住 → 内核等待）
+- 应用 exec /system/bin/appspawn 冷启动 → ldso 加载 400+ 库
+- ld-musl ctor(4 个)→ libutils ctor(_GLOBAL__sub_I_mapped_file.cpp)后静默
+- 4 个 vCPU 全 wfi(空闲)= 应用进程阻塞在内核(futex_wait)
+- dump_wchan 工具（tools/dump_wchan.c）: 应用进程不在主 /proc(疑 PID namespace
+  或已退出)，appspawn 未收到 SIGCHLD
+- 待续: 需抓应用进程的内核等待点(单个 syscall 断点 / PID ns 内观察)

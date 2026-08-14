@@ -117,3 +117,13 @@ out/arm64_virt/clang_arm64/llvm/bin/llvm-readelf -r -d <lib>.so | head -40
 # 已部署镜像树里的库
 readelf -d packages/phone/system/lib/ld-musl-aarch64.so.1 | grep -i android
 ```
+
+## 9. 应用进程卡死调试速记 (2026-08-13)
+
+- 现象: launcher(uid 10007)exec appspawn 冷启动后, ldso ctor 阶段静默,
+  4 vCPU 全空闲, 系统其他服务正常
+- 已排除: ANDROID_RELA 解码 / FillpSo gnu hash 死循环 / fcodec ctor /
+  musl futex __wait(200万次自旋检测无 stuck)
+- 当前工具: tools/dump_wchan.c(遍历 /proc 打印 wchan)、QEMU -s gdb
+- 下一步: 抓应用进程 syscall 断点(QEMU gdb 或 strace 等价), 或确认 PID
+  namespace 影响
