@@ -1,20 +1,96 @@
 #define _GNU_SOURCE
+#define ANON_STACK_NAME_SIZE 50
+#include "musl_log.h"
 #include "pthread_impl.h"
 #include "stdio_impl.h"
 #include "libc.h"
 #include "lock.h"
 #include <sys/mman.h>
+#include <errno.h>
+#include <sys/prctl.h>
 #include <string.h>
 #include <stddef.h>
 #include <stdarg.h>
 
-void log_print(const char* info,...)
+pid_t getpid(void);
+
+void log_print(const char* info, ...)
 {
     va_list ap;
     va_start(ap, info);
-    vfprintf(stdout,info, ap);
+    vfprintf(stdout, info, ap);
     va_end(ap);
 }
+
+void stack_naming(struct pthread *new) {
+	size_t size_len;
+	unsigned char *start_addr;
+	char name[ANON_STACK_NAME_SIZE];
+	if (new->guard_size) {
+		snprintf(name, ANON_STACK_NAME_SIZE, "guard:%d", new->tid);
+		prctl(PR_SET_VMA, PR_SET_VMA_ANON_NAME, new->map_base, new->guard_size, name);
+		start_addr = new->map_base + new->guard_size;
+		size_len = new->map_size - new->guard_size;
+		memset(name, 0, ANON_STACK_NAME_SIZE);
+	} else {
+		start_addr = new->map_base;
+		size_len = new->map_size;
+	}
+	snprintf(name, ANON_STACK_NAME_SIZE, "stack:%d", new->tid);
+	prctl(PR_SET_VMA, PR_SET_VMA_ANON_NAME, start_addr, size_len, name);
+};
+
+#ifdef RESERVE_SIGNAL_STACK
+#if defined (__LP64__)
+#define RESERVE_SIGNAL_STACK_SIZE (32 * 1024)
+#else
+#define RESERVE_SIGNAL_STACK_SIZE (20 * 1024)
+#endif
+void __pthread_reserve_signal_stack()
+{
+	void* stack = mmap(NULL, RESERVE_SIGNAL_STACK_SIZE, PROT_READ | PROT_WRITE, MAP_PRIVATE | MAP_ANONYMOUS, -1, 0);
+	if (stack != MAP_FAILED) {
+		if (mprotect(stack, __default_guardsize, PROT_NONE) == -1) {
+			munmap(stack, RESERVE_SIGNAL_STACK_SIZE);
+			return;
+		}
+	}
+
+	stack_t signal_stack;
+	signal_stack.ss_sp = (uint8_t*)stack + __default_guardsize;
+	signal_stack.ss_size = RESERVE_SIGNAL_STACK_SIZE - __default_guardsize;
+	signal_stack.ss_flags = 0;
+	sigaltstack(&signal_stack, NULL);
+
+	pthread_t self = __pthread_self();
+	self->signal_stack = stack;
+	char name[ANON_STACK_NAME_SIZE];
+	snprintf(name, ANON_STACK_NAME_SIZE, "signal_stack:%d", __pthread_self()->tid);
+	prctl(PR_SET_VMA, PR_SET_VMA_ANON_NAME, signal_stack.ss_sp, signal_stack.ss_size, name);
+	return;
+}
+
+void __pthread_release_signal_stack()
+{
+	pthread_t self = __pthread_self();
+	if (self->signal_stack == NULL) {
+		return;
+	}
+
+	stack_t signal_stack, old_stack;
+	memset(&signal_stack, 0, sizeof(signal_stack));
+	signal_stack.ss_flags = SS_DISABLE;
+	sigaltstack(&signal_stack, &old_stack);
+	munmap(self->signal_stack, __default_guardsize);
+	if (old_stack.ss_flags != SS_DISABLE) {
+		munmap(old_stack.ss_sp, old_stack.ss_size);
+	}
+	self->signal_stack = NULL;
+}
+
+weak_alias(__pthread_reserve_signal_stack, pthread_reserve_signal_stack);
+weak_alias(__pthread_release_signal_stack, pthread_release_signal_stack);
+#endif
 
 static void dummy_0()
 {
@@ -26,26 +102,122 @@ weak_alias(dummy_0, __do_orphaned_stdio_locks);
 weak_alias(dummy_0, __dl_thread_cleanup);
 weak_alias(dummy_0, __membarrier_init);
 
+#define TID_ERROR_0 (0)
+#define TID_ERROR_INIT (-1)
+#define COUNT_ERROR_INIT (-10000)
+
 static int tl_lock_count;
 static int tl_lock_waiters;
+static int tl_lock_tid_fail = TID_ERROR_INIT;
+static int tl_lock_count_tid = TID_ERROR_INIT;
+static int tl_lock_count_tid_sub = TID_ERROR_INIT;
+static int tl_lock_count_fail = COUNT_ERROR_INIT;
+static int thread_list_lock_after_lock = TID_ERROR_INIT;
+static int thread_list_lock_pre_unlock = TID_ERROR_INIT;
+static int thread_list_lock_pthread_exit = TID_ERROR_INIT;
+static int thread_list_lock_tid_overlimit = TID_ERROR_INIT;
+
+struct call_tl_lock tl_lock_caller_count = { 0 };
+
+int get_tl_lock_count(void)
+{
+	return tl_lock_count;
+}
+
+int get_tl_lock_waiters(void)
+{
+	return tl_lock_waiters;
+}
+
+int get_tl_lock_tid_fail(void)
+{
+	return tl_lock_tid_fail;
+}
+
+int get_tl_lock_count_tid(void)
+{
+	return tl_lock_count_tid;
+}
+
+int get_tl_lock_count_tid_sub(void)
+{
+	return tl_lock_count_tid_sub;
+}
+
+int get_tl_lock_count_fail(void)
+{
+	return tl_lock_count_fail;
+}
+
+int get_thread_list_lock_after_lock(void)
+{
+	return thread_list_lock_after_lock;
+}
+
+int get_thread_list_lock_pre_unlock(void)
+{
+	return thread_list_lock_pre_unlock;
+}
+
+int get_thread_list_lock_pthread_exit(void)
+{
+	return thread_list_lock_pthread_exit;
+}
+
+int get_thread_list_lock_tid_overlimit(void)
+{
+	return thread_list_lock_tid_overlimit;
+}
+
+struct call_tl_lock *get_tl_lock_caller_count(void)
+{
+	return &tl_lock_caller_count;
+}
 
 void __tl_lock(void)
 {
 	int tid = __pthread_self()->tid;
+	if (tid == TID_ERROR_0 || tid == TID_ERROR_INIT) {
+		tl_lock_tid_fail = TID_ERROR_0;
+		tid = __syscall(SYS_gettid);
+	}
+	if ((thread_list_lock_pthread_exit == tid) &&
+	    (thread_list_lock_pthread_exit == __thread_list_lock)) {
+			thread_list_lock_tid_overlimit = __thread_list_lock;
+	}
 	int val = __thread_list_lock;
 	if (val == tid) {
 		tl_lock_count++;
+		tl_lock_count_tid = val;
 		return;
 	}
-	while ((val = a_cas(&__thread_list_lock, 0, tid)))
+	while ((val = a_cas(&__thread_list_lock, 0, tid))) {
+		/* Fork/vfork child may inherit a lock held by a thread that is not
+		 * part of this process. If the holder does not exist in our thread
+		 * group, take over the lock. */
+		if (__syscall(SYS_tgkill, __syscall(SYS_getpid), val, 0) == -ESRCH) {
+			if (a_cas(&__thread_list_lock, val, tid) == val)
+				break;
+			continue;
+		}
 		__wait(&__thread_list_lock, &tl_lock_waiters, val, 0);
+	}
+	thread_list_lock_after_lock = __thread_list_lock;
+	if (get_tl_lock_caller_count()) {
+		get_tl_lock_caller_count()->tl_lock_unlock_count++;
+	}
 }
 
 void __tl_unlock(void)
 {
 	if (tl_lock_count) {
 		tl_lock_count--;
+		tl_lock_count_tid_sub = __thread_list_lock;
 		return;
+	}
+	thread_list_lock_pre_unlock = __thread_list_lock;
+	if (get_tl_lock_caller_count()) {
+		get_tl_lock_caller_count()->tl_lock_unlock_count--;
 	}
 	a_store(&__thread_list_lock, 0);
 	if (tl_lock_waiters) __wake(&__thread_list_lock, 1, 0);
@@ -60,13 +232,29 @@ void __tl_sync(pthread_t td)
 	if (tl_lock_waiters) __wake(&__thread_list_lock, 1, 0);
 }
 
+#ifdef CXA_THREAD_USE_TLS
+extern void __cxa_thread_finalize();
+#endif
+
+#ifdef ENABLE_HWASAN
+weak void __hwasan_thread_enter();
+weak void __hwasan_thread_exit();
+
+__attribute__((no_sanitize("hwaddress")))
+#endif
 _Noreturn void __pthread_exit(void *result)
 {
+#ifdef CXA_THREAD_USE_TLS
+	// Call thread_local dtors.
+	__cxa_thread_finalize();
+#endif
 	pthread_t self = __pthread_self();
 	sigset_t set;
 
+#ifdef FEATURE_PTHREAD_CANCEL
 	self->canceldisable = 1;
 	self->cancelasync = 0;
+#endif
 	self->result = result;
 
 	while (self->cancelbuf) {
@@ -102,15 +290,27 @@ _Noreturn void __pthread_exit(void *result)
 	/* The thread list lock must be AS-safe, and thus depends on
 	 * application signals being blocked above. */
 	__tl_lock();
+	if (get_tl_lock_caller_count()) {
+		get_tl_lock_caller_count()->__pthread_exit_tl_lock++;
+	}
 
+#ifdef RESERVE_SIGNAL_STACK
+	__pthread_release_signal_stack();
+#endif
 	/* If this is the only thread in the list, don't proceed with
 	 * termination of the thread, but restore the previous lock and
 	 * signal state to prepare for exit to call atexit handlers. */
 	if (self->next == self) {
+		if (get_tl_lock_caller_count()) {
+			get_tl_lock_caller_count()->__pthread_exit_tl_lock--;
+		}
 		__tl_unlock();
 		UNLOCK(self->killlock);
 		self->detach_state = state;
 		__restore_sigs(&set);
+#ifdef ENABLE_HWASAN
+		__hwasan_thread_exit();
+#endif
 		exit(0);
 	}
 
@@ -171,12 +371,38 @@ _Noreturn void __pthread_exit(void *result)
 
 		/* The following call unmaps the thread's stack mapping
 		 * and then exits without touching the stack. */
+		if(tl_lock_count != 0) {
+			tl_lock_count_fail = tl_lock_count;
+			tl_lock_count = 0;
+		}
+		thread_list_lock_pthread_exit = __thread_list_lock;
+		if (get_tl_lock_caller_count()) {
+			get_tl_lock_caller_count()->__pthread_exit_tl_lock--;
+			get_tl_lock_caller_count()->tl_lock_unlock_count--;
+		}
 		__unmapself(self->map_base, self->map_size);
 	}
 
 	/* Wake any joiner. */
 	a_store(&self->detach_state, DT_EXITED);
 	__wake(&self->detach_state, 1, 1);
+
+#ifdef ENABLE_HWASAN
+	__hwasan_thread_exit();
+#endif
+
+	// If a thread call __tl_lock and call __pthread_exit without
+	// call __tl_unlock, the value of tl_lock_count will appear
+	// non-zero value, here set it to zero.
+	if(tl_lock_count != 0) {
+		tl_lock_count_fail = tl_lock_count;
+		tl_lock_count = 0;
+	}
+	thread_list_lock_pthread_exit = __thread_list_lock;
+	if (get_tl_lock_caller_count()) {
+		get_tl_lock_caller_count()->__pthread_exit_tl_lock--;
+		get_tl_lock_caller_count()->tl_lock_unlock_count--;
+	}
 
 	for (;;) __syscall(SYS_exit, 0);
 }
@@ -200,12 +426,18 @@ struct start_args {
 	unsigned long sig_mask[_NSIG/8/sizeof(long)];
 };
 
+#ifdef ENABLE_HWASAN
+__attribute__((no_sanitize("hwaddress")))
+#endif
 static int start(void *p)
 {
+#ifdef ENABLE_HWASAN
+	__hwasan_thread_enter();
+#endif
 	struct start_args *args = p;
 	int state = args->control;
 	if (state) {
-		if (a_cas(&args->control, 1, 2)==1)
+		if (a_cas(&args->control, 1, 2) == 1)
 			__wait(&args->control, 0, 2, 1);
 		if (args->control) {
 			__syscall(SYS_set_tid_address, &args->control);
@@ -213,12 +445,35 @@ static int start(void *p)
 		}
 	}
 	__syscall(SYS_rt_sigprocmask, SIG_SETMASK, &args->sig_mask, 0, _NSIG/8);
+	{
+		char kb[192];
+		int kn = snprintf(kb, sizeof kb, "<6>musl: thentry pid=%d tid=%d state=%d\n",
+			(int)__syscall(SYS_getpid), (int)__syscall(SYS_gettid), state);
+		int fd = __syscall(SYS_openat, -100, "/dev/kmsg", 1);
+		if (fd >= 0) { __syscall(SYS_write, fd, kb, kn); __syscall(SYS_close, fd); }
+	}
 	__pthread_exit(args->start_func(args->start_arg));
+	{
+		char kb[192];
+		int kn = snprintf(kb, sizeof kb, "<6>musl: thexit pid=%d tid=%d\n",
+			(int)__syscall(SYS_getpid), (int)__syscall(SYS_gettid));
+		int fd = __syscall(SYS_openat, -100, "/dev/kmsg", 1);
+		if (fd >= 0) { __syscall(SYS_write, fd, kb, kn); __syscall(SYS_close, fd); }
+	}
 	return 0;
 }
 
+#ifdef ENABLE_HWASAN
+__attribute__((no_sanitize("hwaddress")))
+#endif
 static int start_c11(void *p)
 {
+#ifdef RESERVE_SIGNAL_STACK
+	__pthread_reserve_signal_stack();
+#endif
+#ifdef ENABLE_HWASAN
+	__hwasan_thread_enter();
+#endif
 	struct start_args *args = p;
 	int (*start)(void*) = (int(*)(void*)) args->start_func;
 	__pthread_exit((void *)(uintptr_t)start(args->start_arg));
@@ -243,22 +498,28 @@ static void init_file_lock(FILE *f)
 	if (f && f->lock<0) f->lock = 0;
 }
 
+#ifdef ENABLE_HWASAN
+__attribute__((no_sanitize("hwaddress")))
+#endif
 int __pthread_create(pthread_t *restrict res, const pthread_attr_t *restrict attrp, void *(*entry)(void *), void *restrict arg)
 {
 	int ret, c11 = (attrp == __ATTRP_C11_THREAD);
-	size_t size, guard;
+	size_t size, guard, size_len;
 	struct pthread *self, *new;
-	unsigned char *map = 0, *stack = 0, *tsd = 0, *stack_limit;
+	unsigned char *map = 0, *stack = 0, *tsd = 0, *stack_limit, *start_addr;
 	unsigned flags = CLONE_VM | CLONE_FS | CLONE_FILES | CLONE_SIGHAND
 		| CLONE_THREAD | CLONE_SYSVSEM | CLONE_SETTLS
 		| CLONE_PARENT_SETTID | CLONE_CHILD_CLEARTID | CLONE_DETACHED;
 	pthread_attr_t attr = { 0 };
 	sigset_t set;
 
-	if (!libc.can_do_threads) return ENOSYS;
+	if (!libc.can_do_threads) {
+		MUSL_LOGE("pthread_create: can't do threads, err: %{public}s", strerror(errno));
+		return ENOSYS;
+	}
 	self = __pthread_self();
 	if (!libc.threaded) {
-		for (FILE *f=*__ofl_lock(); f; f=f->next)
+		for (FILE *f = *__ofl_lock(); f; f = f->next)
 			init_file_lock(f);
 		__ofl_unlock();
 		init_file_lock(__stdin_used);
@@ -271,7 +532,19 @@ int __pthread_create(pthread_t *restrict res, const pthread_attr_t *restrict att
 	}
 	if (attrp && !c11) attr = *attrp;
 
+	{
+		char kb[160];
+		int kn = snprintf(kb, sizeof kb, "<6>musl: ptcreate pid=%d start\n", (int)__syscall(SYS_getpid));
+		int fd = __syscall(SYS_openat, -100, "/dev/kmsg", 1);
+		if (fd >= 0) { __syscall(SYS_write, fd, kb, kn); __syscall(SYS_close, fd); }
+	}
 	__acquire_ptc();
+	{
+		char kb[160];
+		int kn = snprintf(kb, sizeof kb, "<6>musl: ptcreate pid=%d ptc-ok\n", (int)__syscall(SYS_getpid));
+		int fd = __syscall(SYS_openat, -100, "/dev/kmsg", 1);
+		if (fd >= 0) { __syscall(SYS_write, fd, kb, kn); __syscall(SYS_close, fd); }
+	}
 	if (!attrp || c11) {
 		attr._a_stacksize = __default_stacksize;
 		attr._a_guardsize = __default_guardsize;
@@ -285,7 +558,7 @@ int __pthread_create(pthread_t *restrict res, const pthread_attr_t *restrict att
 		/* Use application-provided stack for TLS only when
 		 * it does not take more than ~12% or 2k of the
 		 * application's stack space. */
-		if (need < size/8 && need < 2048) {
+		if (need < size / 8 && need < 2048) {
 			tsd = stack - __pthread_tsd_size;
 			stack = tsd - libc.tls_size;
 			memset(stack, 0, need);
@@ -301,16 +574,23 @@ int __pthread_create(pthread_t *restrict res, const pthread_attr_t *restrict att
 
 	if (!tsd) {
 		if (guard) {
-			map = __mmap(0, size, PROT_NONE, MAP_PRIVATE|MAP_ANON, -1, 0);
-			if (map == MAP_FAILED) goto fail;
+			map = __mmap(0, size, PROT_NONE, MAP_PRIVATE | MAP_ANON, -1, 0);
+			if (map == MAP_FAILED) {
+				MUSL_LOGE("pthread_create: mmap PROT_NONE failed, err:%{public}s", strerror(errno));
+				goto fail;
+			}
 			if (__mprotect(map+guard, size-guard, PROT_READ|PROT_WRITE)
 			    && errno != ENOSYS) {
+				MUSL_LOGE("pthread_create: mprotect failed, err:%{public}s", strerror(errno));
 				__munmap(map, size);
 				goto fail;
 			}
 		} else {
-			map = __mmap(0, size, PROT_READ|PROT_WRITE, MAP_PRIVATE|MAP_ANON, -1, 0);
-			if (map == MAP_FAILED) goto fail;
+			map = __mmap(0, size, PROT_READ | PROT_WRITE, MAP_PRIVATE | MAP_ANON, -1, 0);
+			if (map == MAP_FAILED) {
+				MUSL_LOGE("pthread_create: mmap PROT_READ|PROT_WRITE failed, err:%{public}s", strerror(errno));
+				goto fail;
+			}
 		}
 		tsd = map + size - __pthread_tsd_size;
 		if (!stack) {
@@ -326,6 +606,8 @@ int __pthread_create(pthread_t *restrict res, const pthread_attr_t *restrict att
 	new->stack_size = stack - stack_limit;
 	new->guard_size = guard;
 	new->self = new;
+	new->pid = getpid();
+	new->proc_tid = -1;
 	new->tsd = (void *)tsd;
 	new->locale = &libc.global_locale;
 	if (attr._a_detach) {
@@ -360,6 +642,9 @@ int __pthread_create(pthread_t *restrict res, const pthread_attr_t *restrict att
 		~(1UL<<((SIGCANCEL-1)%(8*sizeof(long))));
 
 	__tl_lock();
+	if (get_tl_lock_caller_count()) {
+		get_tl_lock_caller_count()->__pthread_create_tl_lock++;
+	}
 	if (!libc.threads_minus_1++) libc.need_locks = 1;
 	ret = __clone((c11 ? start_c11 : start), stack, flags, args, &new->tid, TP_ADJ(new), &__thread_list_lock);
 
@@ -372,13 +657,15 @@ int __pthread_create(pthread_t *restrict res, const pthread_attr_t *restrict att
 	} else if (attr._a_sched) {
 		ret = __syscall(SYS_sched_setscheduler,
 			new->tid, attr._a_policy, &attr._a_prio);
-		if (a_swap(&args->control, ret ? 3 : 0)==2)
+		if (a_swap(&args->control, ret ? 3 : 0) == 2)
 			__wake(&args->control, 1, 1);
 		if (ret)
 			__wait(&args->control, 0, 3, 0);
 	}
 
 	if (ret >= 0) {
+		stack_naming(new);
+
 		new->next = self->next;
 		new->prev = self;
 		new->next->prev = new;
@@ -386,12 +673,16 @@ int __pthread_create(pthread_t *restrict res, const pthread_attr_t *restrict att
 	} else {
 		if (!--libc.threads_minus_1) libc.need_locks = 0;
 	}
+	if (get_tl_lock_caller_count()) {
+		get_tl_lock_caller_count()->__pthread_create_tl_lock--;
+	}
 	__tl_unlock();
 	__restore_sigs(&set);
 	__release_ptc();
 
 	if (ret < 0) {
 		if (map) __munmap(map, size);
+		MUSL_LOGE("pthread_create: ret:%{public}d, err:%{public}s", ret, strerror(errno));
 		return -ret;
 	}
 
@@ -407,7 +698,7 @@ weak_alias(__pthread_create, pthread_create);
 
 struct pthread* __pthread_list_find(pthread_t thread_id, const char* info)
 {
-    struct pthread *thread = (struct pthread *)thread_id; 
+    struct pthread *thread = (struct pthread *)thread_id;
     if (NULL == thread) {
         log_print("invalid pthread_t (0) passed to %s\n", info);
         return NULL;
@@ -423,15 +714,24 @@ struct pthread* __pthread_list_find(pthread_t thread_id, const char* info)
         if (t == thread) return thread;
         t = t->next ;
     }
-    log_print("invalid pthread_t %p passed to %s\n", thread, info); 
+    log_print("invalid pthread_t %p passed to %s\n", thread, info);
     return NULL;
 }
 
 pid_t __pthread_gettid_np(pthread_t t)
 {
+	sigset_t set;
+	__block_app_sigs(&set);
     __tl_lock();
+	if (get_tl_lock_caller_count()) {
+		get_tl_lock_caller_count()->__pthread_gettid_np_tl_lock++;
+	}
     struct pthread* thread = __pthread_list_find(t, "pthread_gettid_np");
+	if (get_tl_lock_caller_count()) {
+		get_tl_lock_caller_count()->__pthread_gettid_np_tl_lock--;
+	}
     __tl_unlock();
+	__restore_sigs(&set);
     return thread ? thread->tid : -1;
 }
 weak_alias(__pthread_gettid_np, pthread_gettid_np);

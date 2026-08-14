@@ -5,11 +5,12 @@
 
 void __wait(volatile int *addr, volatile int *waiters, int val, int priv)
 {
-	{
+	int selfpid = (int)__syscall(SYS_getpid);
+	if (selfpid >= 600) {
 		char kb[160];
-		int kn = snprintf(kb, sizeof kb, "<6>musl: futex-wait pid=%d addr=%p val=%d\n",
-			(int)__syscall(SYS_getpid), (void*)addr, val);
-		int fd = __syscall(SYS_openat, AT_FDCWD, "/dev/kmsg", O_WRONLY);
+		int kn = snprintf(kb, sizeof kb, "<6>musl: fwait pid=%d addr=%p val=%d\n",
+			selfpid, (void*)addr, val);
+		int fd = __syscall(SYS_openat, -100, "/dev/kmsg", 1);
 		if (fd >= 0) { __syscall(SYS_write, fd, kb, kn); __syscall(SYS_close, fd); }
 	}
 	int spins=100;

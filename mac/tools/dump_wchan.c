@@ -33,7 +33,8 @@ static void readfile(const char *path, char *out, size_t sz)
 
 int main(void)
 {
-    sleep(80);
+retry_loop:
+    sleep(60);
     DIR *d = opendir("/proc");
     if (!d) return 1;
     struct dirent *e;
@@ -59,7 +60,7 @@ int main(void)
         }
         snprintf(path, sizeof path, "/proc/%s/cmdline", e->d_name);
         readfile(path, cmd, sizeof cmd);
-        if (pid > 750 && pid < 850) {
+        if (pid >= 1 && pid < 1500) {
             char tpath[256];
             DIR *td = opendir(tpath ? "/proc" : "/proc");
             snprintf(tpath, sizeof tpath, "/proc/%s/task", e->d_name);
@@ -79,5 +80,5 @@ int main(void)
     }
     closedir(d);
     kmsg("WCHAN: done");
-    return 0;
+    goto retry_loop;
 }

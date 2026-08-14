@@ -5,9 +5,5 @@
 
 int setresgid(gid_t rgid, gid_t egid, gid_t sgid)
 {
-	/* NOTE(mac): hangs inside app seccomp sandbox */
-	(void)rgid;
-	(void)egid;
-	(void)sgid;
-	return 0;
+	return __syscall_ret(__syscall(SYS_setresgid, rgid, egid, sgid));
 }

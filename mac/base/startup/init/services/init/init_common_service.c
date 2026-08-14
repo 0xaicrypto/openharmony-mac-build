@@ -80,7 +80,7 @@ static int SetAllAmbientCapability(void)
     return SERVICE_SUCCESS;
 }
 
-static int SetSystemSeccompPolicy(const Service *service)
+__attribute__((unused)) static int SetSystemSeccompPolicy(const Service *service)
 {
 #ifdef WITH_SECCOMP
     if (strncmp(APPSPAWN_NAME, service->name, strlen(APPSPAWN_NAME))
@@ -226,8 +226,6 @@ static void DropCapability(const Service *service)
 
 static int SetPerms(const Service *service)
 {
-    { int kfd=open("/dev/kmsg",O_WRONLY); if(kfd>=0){ char kb[128]; int kn=snprintf(kb,sizeof kb,"<6>init-dbg: SetPerms SKIPPED %s\n", service->name); write(kfd,kb,kn); close(kfd);} }
-    return 0;
 #ifndef OHOS_LITE
     /*
      * service before setting Perms hooks

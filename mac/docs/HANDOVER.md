@@ -4,11 +4,12 @@
 
 ## 1. 现状一句话
 
-构建 ✅、系统启动 ✅、应用框架 ✅ (appspawn 模块加载、launcher/lockscreen ready、应用 spawn)、
-EGL 软件渲染 ✅ (Mesa swrast, EGL 1.4)。**当前唯一卡点: 桌面 UI 未上屏 ——
-- virtio-gpu 下 QEMU 侧帧传输不上屏 (QEMU 9/11 均复现)
-- `-vga std` 下帧缓冲正常 (内核文本可见)，但 HDI 合成器 `composer_host` SIGSEGV →
-  render_service 合成无法输出**
+构建 ✅、系统启动 ✅、**应用完整运行** ✅ (launcher 启动并渲染桌面布局、
+systemui/settingsdata 正常运行、bms/appmgr 数据链路完整)。
+EGL 软件渲染 ✅ (Mesa swrast, EGL 1.4)。
+**当前唯一卡点: 桌面 UI 未上屏 —— HDI 显示服务 `display_composer_service` 未注册
+(composer_host 初始化异常: comm 未变/无 ldso 日志但进程存活), RS 合成无法输出,
+屏幕全黑; virtio-gpu 下 QEMU 侧帧传输也不上屏 (QEMU 9/11 均复现)**
 
 ## 2. 为什么会有这个仓库
 
@@ -41,7 +42,11 @@ OHOS 官方构建只支持 Linux。本仓库以"源码相对路径镜像"的方�
    `DT_ANDROID_REL` 改为 `DT_ANDROID_RELA` → 重定位现在正确解码 (日志已验证与 llvm-readelf 一致)。
 5. **旧卡点 (libimage_native 崩溃) 已全部解开**: 真实链条是 dlopen 卸载/析构竞争
    (TESTDL/PREDLOPEN 调试循环引发) + 模块符号缺失。解法见 PROGRESS.md 第五轮。
-6. **当前卡点**: 桌面 UI 不上屏 (见 §7)。
+6. **uid 体系(第六轮)**: round4 的两个临时绕过(setresuid/setresgid bypass +
+   init SetPerms 整体跳过)导致服务进程全是 root → binder caller uid=0 →
+   installd/bms 权限全挂、应用 GetBundleInfoForSelf 失败(launcher 反复 spawn)。
+   恢复两者后 launcher 完整启动。**别再把 setresuid/setgid/SetPerms 当"绕过"手段。**
+7. **当前卡点**: 显示服务未注册 (见 §7)。
 
 ## 6. 修改 → 验证 循环 (核心工作流)
 

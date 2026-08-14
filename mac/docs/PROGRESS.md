@@ -164,3 +164,77 @@ bison, make (gnu), gnu-sed, openjdk@17, libelf, pkg-config, ccache, nproc/python
 - dump_wchan 工具（tools/dump_wchan.c）: 应用进程不在主 /proc(疑 PID namespace
   或已退出)，appspawn 未收到 SIGCHLD
 - 待续: 需抓应用进程的内核等待点(单个 syscall 断点 / PID ns 内观察)
+
+## 第六轮 (2026-08-14): uid 体系修复 → 应用(launcher)完整启动
+
+### 定位过程(应用"反复 spawn 失败"的真相)
+- 应用进程(exec appspawn)一直卡在 `MainThread::Start` 前: 加 pid 级日志(asdbg 带 pid、
+  dls2b/dls3/ctor-array 带 pid)后确认应用进程在 `runChildProcessor → RunChildThread` 处
+  静默、线程创建(EventRunner)成功但 `GetBundleInfoForSelf` 失败 → exit(0) → ams 每 10 秒重启。
+- 两个隐藏的 uid 问题(都是 round4 临时绕过遗留):
+  1. **init SetPerms 被整体跳过**(round4 为绕 composer/allocator 挂起) → 服务进程从未
+     setuid(全是 root) → binder `sender_euid=0` → installd(`VerifyCallingPermission`
+     要求 uid==5523)、bms 权限验证全部失败, `GetCallingUid=0`
+  2. **musl setresuid/setresgid 被 bypass**(round4 疑 seccomp 挂起) → 应用进程
+     (launcher uid 10007)实际仍 root → `GetBundleInfoForSelf` 用 uid 查 bundle 失败
+- 期间还发现: bms 数据库(bmsdb.db)从未写入(稀疏空文件)→ 扫描走"首次启动"路径但
+  用户 0 未创建(/data 无 accounts 目录)→ 反复清空 userdata 无效 → 最终由 SetPerms
+  恢复(uid 正确)后 bms 入库 + 用户激活(52s)+ 一切打通
+
+### 修复
+- **init SetPerms 完整恢复**(setgid/seccomp/setuid/capset/ambient 全部恢复,
+  不再 SKIP)。注意: 之前 capset 跳过测试引发 sysrq crash(服务能力缺失), 必须完整恢复。
+- **musl setresuid/setresgid 恢复真实 syscall**(移除 bypass)。恢复后不再挂起
+  (round4 的挂起根源其实是 uid 体系混乱本身)。
+- **appmgr(SA:114)profile 缺失**: 源码 `foundation/ability/ability_runtime/services/sa_profile/`
+  只有 180/182/183/184/501.json, 无 114.json → foundation.json 无 appmgr →
+  应用连不上 appmgr。修复: 手动向 `packages/phone/system/profile/foundation.json`
+  添加 SA 114(libappms.z.so, run-on-create)。
+- **usb_host(hdf_devhost) SIGSEGV 空指针崩溃**(无 USB 硬件时) → init 卡 632 秒
+  (bootevent 未全触发)。修复: QEMU 加 `-device qemu-xhci`; 并临时在
+  hdf_devhost.cfg 禁用 usb_host。
+- **bmsdb.db 空文件** → SetPerms 恢复后扫描正常入库(installed_bundle 含
+  com.ohos.launcher 完整 JSON)。
+
+### 结果
+- launcher 首次完整启动: `LayoutViewModel calculateFolder/calculateForm`(桌面布局渲染)
+- systemui / settingsdata 正常运行(binder 活跃)
+- launcher 不再反复 spawn; spawn 的进程名确认(AppSpawnProcessMsg 加 proc/pname 日志)
+
+### 本轮新增/更新的工具与脚本
+- `tools/dump_wchan.c`: 循环模式(每 60s dump)+ 覆盖 pid 1-1500
+- `scripts/cc_dynlink.sh`: 单文件重编 dynlink.o(musl ldso)
+- `scripts/rebuild_init2.sh`、`scripts/rebuild_composer_driver.sh`: 已入库
+- musl 日志梳理: 去掉 fillp-*/futex-wait 高频日志(拖慢系统), 保留 fwait(pid>=600)
+  /dls2b/dls3/ctor-array(带 pid)/dlopen_impl(带 pid)
+
+## 第七轮 (2026-08-14 晚): 显示链路(composer_host)诊断(进行中)
+
+### 状态
+- 系统+应用全部正常(launcher/systemui/settingsdata 运行), 但屏幕全黑:
+  `display_composer_service not found`(HDI 显示服务未注册, 所有 boot)
+- composer_host(hdf_devhost hostId=12)进程存在(主线程 futex_wait + 2 binder 线程),
+  但 comm 未变(未 exec 完成?)、无 dls3/无 devhost-dbg ENTRY、无任何 hilog 输出;
+  wifi_host/power_host 等其它 host 全部正常(devhost-dbg ENTRY/main/AttachClnt 都有)
+- vsync 链路: composer 的 vdi_impl(DRM vsync worker)从未被 dlopen
+  (`drmWaitVBlank` 在 virtio-gpu 无 vblank 时永久阻塞)→ RS 合成/显示无 vsync
+- RS(render_service)合成日志 `PreProcessLayersComp: layer map is empty, drop this frame`
+  (有合成尝试但无图层/无输出)
+
+### 已尝试(无效或回退)
+- chipsetsdk 芯片 GPU 库(libGLES_mali/libEGL_impl/libhvgr_v200)缺失 →
+  用 mesa(libGLESv2/libEGL)复制替代 → mali dlopen 成功, 但服务仍不注册
+- init seccomp 跳过(SetSystemSeccompPolicy)→ 无效
+- init capset 跳过 → sysrq crash(panic) → 已回退
+- 新库部署(vdi_impl_default/service_1.2/driver_1.0 手动链接):
+  - vsync 软件模拟补丁已写入 `drm_vsync_worker.cpp`(drmWaitVBlank 失败时
+    usleep(16ms) 模拟 60Hz; 未实际生效因为 vdi_impl 未被加载)
+  - 手动链接方法: 从 obj/ 的 .ninja 提取变量编译 + 链接
+    (需要补 prebuilts libc++.a/libunwind.a, --start-group 不解决 _Unwind,
+     libc++abi.a 的 _Unwind 是 U, 需 libunwind.a)
+
+### 下一步
+1. composer_host 的 exec 异常(comm 未变 + 无 ldso 日志)需内核侧确认
+   (QEMU gdb / sysrq 阻塞栈), 或对比 SetPerms 跳过(round4)时 composer_host 是否正常
+2. 确认 hdf 驱动(libdisplay_composer_driver_1.0)加载机制(preload=0x0 按需加载,
+   RS 请求时 devmgr 加载, 但 composer_host 未注册服务)

@@ -618,17 +618,6 @@ static Sym *gnu_lookup(struct sym_info_pair s_info_p, uint32_t *hashtab, struct 
 	uint32_t *buckets = hashtab + 4 + hashtab[2]*(sizeof(size_t)/4);
 	uint32_t i = buckets[h1 % nbuckets];
 
-	if (strstr(dso->name, "FillpSo") != NULL) {
-		char kb[256];
-		int kn = snprintf(kb, sizeof kb, "<6>musl: fillp-gnu h1=%u nb=%u nsym=%u symoff=%u blm=%u i=%u\n",
-			h1, hashtab[0], hashtab[1], hashtab[2], hashtab[3], i);
-		int fd = __syscall(SYS_openat, AT_FDCWD, "/dev/kmsg", O_WRONLY);
-		if (fd >= 0) {
-			__syscall(SYS_write, fd, kb, kn);
-			__syscall(SYS_close, fd);
-		}
-	}
-
 	if (!i) {
 		LD_LOGD("gnu_lookup symbol not found (bloom filter), so:%{public}s s:%{public}s", dso->name, verinfo->s);
 		return 0;
@@ -958,27 +947,7 @@ static inline struct symdef find_sym_by_saved_so_list(
 	// skip head dso.
 	int start_search_index = sym_type==REL_COPY ? 1 : 0;
 	struct dso *dso_searching = 0;
-	if (strstr(dso_relocating->name, "FillpSo") != NULL) {
-		char kb[160];
-		int kn = snprintf(kb, sizeof kb, "<6>musl: fillp-find count=%d name=%s\n",
-			dso_relocating->reloc_can_search_dso_count, verinfo->s ? verinfo->s : "?");
-		int fd = __syscall(SYS_openat, AT_FDCWD, "/dev/kmsg", O_WRONLY);
-		if (fd >= 0) {
-			__syscall(SYS_write, fd, kb, kn);
-			__syscall(SYS_close, fd);
-		}
-	}
 	for (int i = start_search_index; i < dso_relocating->reloc_can_search_dso_count; i++) {
-		if (strstr(dso_relocating->name, "FillpSo") != NULL && (i >= 220 || i % 64 == 0)) {
-			char kb[256];
-			int kn = snprintf(kb, sizeof kb, "<6>musl: fillp-scan i=%d/%d dso=%s\n", i, dso_relocating->reloc_can_search_dso_count,
-				dso_relocating->reloc_can_search_dso_list[i] ? dso_relocating->reloc_can_search_dso_list[i]->name : "?");
-			int fd = __syscall(SYS_openat, AT_FDCWD, "/dev/kmsg", O_WRONLY);
-			if (fd >= 0) {
-				__syscall(SYS_write, fd, kb, kn);
-				__syscall(SYS_close, fd);
-			}
-		}
 		dso_searching = dso_relocating->reloc_can_search_dso_list[i];
 		Sym *sym;
 		if ((ght = dso_searching->ghashtab)) {
@@ -2674,15 +2643,6 @@ static void do_android_relocs(struct dso *p, size_t dt_name, size_t dt_size)
 
 	for (size_t i = 0; i < relocs_num;) {
 
-		if (strstr(p->name, "FillpSo") != NULL) {
-			char kb[160];
-			int kn = snprintf(kb, sizeof kb, "<6>musl: fillp-group i=%zu num=%zu\n", i, relocs_num);
-			int fd = __syscall(SYS_openat, AT_FDCWD, "/dev/kmsg", O_WRONLY);
-			if (fd >= 0) {
-				__syscall(SYS_write, fd, kb, kn);
-				__syscall(SYS_close, fd);
-			}
-		}
 		size_t group_size, group_flags;
 
 		android_rel_curr = sleb128_decoder(android_rel_curr, android_rel_end, &group_size);
@@ -2751,15 +2711,6 @@ static void do_android_relocs(struct dso *p, size_t dt_name, size_t dt_size)
 					close(kfd);
 				}
 			}
-			if (strstr(p->name, "FillpSo") != NULL && ((rel[0] & 0xffff) < 0x100 || j < 3 || rel[0] > 0x29000)) {
-				char kb[160];
-				int kn = snprintf(kb, sizeof kb, "<6>musl: fillp-reloc j=%zu off=%zu info=%zu\n", j, rel[0], rel[1]);
-				int fd = __syscall(SYS_openat, AT_FDCWD, "/dev/kmsg", O_WRONLY);
-				if (fd >= 0) {
-					__syscall(SYS_write, fd, kb, kn);
-					__syscall(SYS_close, fd);
-				}
-			}
 			if (dt_name == DT_ANDROID_REL) {
 				do_relocs(p, rel, sizeof(size_t) * 2, 2);
 			} else {
@@ -2774,15 +2725,6 @@ static void do_android_relocs(struct dso *p, size_t dt_name, size_t dt_size)
 static void do_relr_relocs(struct dso *dso, size_t *relr, size_t relr_size)
 {
 	if (dso == &ldso) return; /* self-relocation was done in _dlstart */
-	if (strstr(dso->name, "FillpSo") != NULL) {
-		char kb[160];
-		int kn = snprintf(kb, sizeof kb, "<6>musl: fillp-relr size=%zu\n", relr_size);
-		int fd = __syscall(SYS_openat, AT_FDCWD, "/dev/kmsg", O_WRONLY);
-		if (fd >= 0) {
-			__syscall(SYS_write, fd, kb, kn);
-			__syscall(SYS_close, fd);
-		}
-	}
 	unsigned char *base = dso->base;
 	size_t *reloc_addr;
 	for (; relr_size; relr++, relr_size -= sizeof(size_t))
@@ -3020,6 +2962,13 @@ static void do_init_fini(struct dso **queue)
 			__syscall(SYS_close, fd);
 		}
 	}
+	{
+		char kb[160];
+		int kn = snprintf(kb, sizeof kb, "<6>musl: ctor-lock pid=%d tid=%d\n",
+			(int)__syscall(SYS_getpid), (int)__syscall(SYS_gettid));
+		int fd = __syscall(SYS_openat, AT_FDCWD, "/dev/kmsg", O_WRONLY);
+		if (fd >= 0) { __syscall(SYS_write, fd, kb, kn); __syscall(SYS_close, fd); }
+	}
 	pthread_mutex_lock(&init_fini_lock);
 	{
 		char kb[160];
@@ -3073,7 +3022,8 @@ static void do_init_fini(struct dso **queue)
 		if (dyn[0] & (1<<DT_INIT_ARRAY)) {
 			{
 				char kb[256];
-				int kn = snprintf(kb, sizeof kb, "<6>musl: ctor-array dso=%s n=%zu\n", p->name ? p->name : "?", dyn[DT_INIT_ARRAYSZ]/sizeof(size_t));
+				int kn = snprintf(kb, sizeof kb, "<6>musl: ctor-array pid=%d dso=%s n=%zu\n",
+					(int)__syscall(SYS_getpid), p->name ? p->name : "?", dyn[DT_INIT_ARRAYSZ]/sizeof(size_t));
 				int fd = __syscall(SYS_openat, AT_FDCWD, "/dev/kmsg", O_WRONLY);
 				if (fd >= 0) {
 					__syscall(SYS_write, fd, kb, kn);
@@ -3105,6 +3055,12 @@ static void do_init_fini(struct dso **queue)
 			}
 			if (p != &ldso) {
 				trace_marker_end(HITRACE_TAG_MUSL);
+			}
+			{
+				char kb[256];
+				int kn = snprintf(kb, sizeof kb, "<6>musl: ctor-done dso=%s\n", p->name ? p->name : "?");
+				int fd = __syscall(SYS_openat, AT_FDCWD, "/dev/kmsg", O_WRONLY);
+				if (fd >= 0) { __syscall(SYS_write, fd, kb, kn); __syscall(SYS_close, fd); }
 			}
 		}
 
@@ -3285,6 +3241,16 @@ hidden void __dls2(unsigned char *base, size_t *sp)
 
 void __dls2b(size_t *sp, size_t *auxv, size_t *aux)
 {
+	{
+		char kb[256];
+		int kn = snprintf(kb, sizeof kb, "<6>musl: dls2b pid=%d\n",
+			(int)__syscall(SYS_getpid));
+		int fd = __syscall(SYS_openat, AT_FDCWD, "/dev/kmsg", O_WRONLY);
+		if (fd >= 0) {
+			__syscall(SYS_write, fd, kb, kn);
+			__syscall(SYS_close, fd);
+		}
+	}
 	/* Setup early thread pointer in builtin_tls for ldso/libc itself to
 	 * use during dynamic linking. If possible it will also serve as the
 	 * thread pointer at runtime. */
@@ -3321,6 +3287,16 @@ void __dls3(size_t *sp, size_t *auxv, size_t *aux)
 	/* Find aux vector just past environ[] and use it to initialize
 	 * global data that may be needed before we can make syscalls. */
 	__environ = envp;
+	{
+		char kb[256];
+		int kn = snprintf(kb, sizeof kb, "<6>musl: dls3 pid=%d argv0=%s\n",
+			(int)__syscall(SYS_getpid), argv_orig[0] ? argv_orig[0] : "?");
+		int fd = __syscall(SYS_openat, AT_FDCWD, "/dev/kmsg", O_WRONLY);
+		if (fd >= 0) {
+			__syscall(SYS_write, fd, kb, kn);
+			__syscall(SYS_close, fd);
+		}
+	}
 	search_vec(auxv, &__sysinfo, AT_SYSINFO);
 	__pthread_self()->sysinfo = __sysinfo;
 	libc.secure = ((aux[0]&0x7800)!=0x7800 || aux[AT_UID]!=aux[AT_EUID]
@@ -3815,8 +3791,8 @@ void *dlopen_impl(
 		int kfd = open("/dev/kmsg", O_WRONLY);
 		if (kfd >= 0) {
 			char kb[200];
-			int kn = snprintf(kb, sizeof kb, "<6>musl: dlopen_impl file=%s mode=%x ns=%s\n",
-				file, mode, namespace ? namespace : "(null)");
+			int kn = snprintf(kb, sizeof kb, "<6>musl: dlopen_impl pid=%d file=%s mode=%x ns=%s\n",
+				(int)__syscall(SYS_getpid), file, mode, namespace ? namespace : "(null)");
 			write(kfd, kb, kn);
 			close(kfd);
 		}
