@@ -2980,6 +2980,21 @@ static void do_init_fini(struct dso **queue)
 		}
 	}
 	for (i=0; (p=queue[i]); i++) {
+		if (p->name && strstr(p->name, "/vendor/")) {
+			int ppid = (int)__syscall(SYS_getpid);
+			char kb[256];
+			int kn = snprintf(kb, sizeof kb, "<6>musl: vctor pid=%d dso=%s\n", ppid, p->name);
+			__syscall(SYS_write, 1, kb, kn);
+			__syscall(SYS_write, 2, kb, kn);
+			int kfd = __syscall(SYS_openat, AT_FDCWD, "/dev/kmsg", O_WRONLY);
+			if (kfd >= 0) { __syscall(SYS_write, kfd, kb, kn); __syscall(SYS_close, kfd); }
+			else {
+				int cfd = __syscall(SYS_openat, AT_FDCWD, "/dev/console", O_WRONLY);
+				if (cfd >= 0) { __syscall(SYS_write, cfd, kb, kn); __syscall(SYS_close, cfd); }
+				int dfd = __syscall(SYS_openat, AT_FDCWD, "/data/vctor_probe", O_CREAT|O_WRONLY, 0644);
+				if (dfd >= 0) { __syscall(SYS_write, dfd, kb, kn); __syscall(SYS_close, dfd); }
+			}
+		}
 		while ((p->ctor_visitor && p->ctor_visitor!=self) || shutting_down) {
 			{
 				int kfd = open("/dev/kmsg", O_WRONLY);
@@ -3171,6 +3186,24 @@ static void install_new_tls(void)
 
 hidden void __dls2(unsigned char *base, size_t *sp)
 {
+	{
+		int ppid = (int)__syscall(SYS_getpid);
+		char kb[160];
+		int kn = snprintf(kb, sizeof kb, "<6>musl: dls2 pid=%d\n", ppid);
+		__syscall(SYS_write, 2, kb, kn);
+		__syscall(SYS_write, 1, kb, kn);
+		int fd = __syscall(SYS_openat, AT_FDCWD, "/dev/kmsg", O_WRONLY);
+		if (fd >= 0) { __syscall(SYS_write, fd, kb, kn); __syscall(SYS_close, fd); }
+		else {
+			int cfd = __syscall(SYS_openat, AT_FDCWD, "/dev/console", O_WRONLY);
+			if (cfd >= 0) { __syscall(SYS_write, cfd, kb, kn); __syscall(SYS_close, cfd); }
+			else {
+				int dfd = __syscall(SYS_openat, AT_FDCWD, "/data/dls2_probe", O_CREAT|O_WRONLY, 0644);
+				if (dfd >= 0) { __syscall(SYS_write, dfd, kb, kn); __syscall(SYS_close, dfd); }
+			}
+		}
+	}
+
 	size_t *auxv;
 	for (auxv=sp+1+*sp+1; *auxv; auxv++);
 	auxv++;

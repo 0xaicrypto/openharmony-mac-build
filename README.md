@@ -9,7 +9,8 @@
   (launcher 启动并渲染桌面布局, systemui/settingsdata 正常运行, uid 体系修复)
 - EGL 软件渲染 ✅ (Mesa swrast)
 - 显示输出 ⚠️ 进行中: HDI 显示服务 display_composer_service 未注册(composer_host
-  初始化异常), 屏幕黑; virtio-gpu 帧传输不上屏
+  host attach 成功但服务未发布, 疑驱动 LoadVdiSo/构造失败), 屏幕黑;
+  virtio-gpu 帧传输不上屏
 
 ## 仓库结构
 

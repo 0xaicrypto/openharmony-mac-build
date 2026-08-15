@@ -238,3 +238,43 @@ bison, make (gnu), gnu-sed, openjdk@17, libelf, pkg-config, ccache, nproc/python
    (QEMU gdb / sysrq 阻塞栈), 或对比 SetPerms 跳过(round4)时 composer_host 是否正常
 2. 确认 hdf 驱动(libdisplay_composer_driver_1.0)加载机制(preload=0x0 按需加载,
    RS 请求时 devmgr 加载, 但 composer_host 未注册服务)
+
+## 第七轮补充 (2026-08-15): composer_host 服务未注册深挖(boot250-278)
+
+### 认知修正(推翻早期结论)
+- composer_host **没有死锁/卡死**: ptrace(PTRACE_GETREGSET + 帧回溯)拿到完整调用链:
+  `hdf_devhost main -> HdfMessageLooperStart -> HdfMessageQueueNext -> OsalSemWait -> futex`
+  = **主线程在 HDF 消息循环中正常等待消息**(与其他 host 形态一致)
+- "probe 无/main 未执行"是误判: /data 目录权限 0771, uid 3036 无写权 → probe 写不进
+  (wifi 3026 能写; 用 /dev//tmp//vendor 多位置 probe 排除)
+- StartService(DevmgrServiceClntAttachDeviceHost)返回成功(否则不进消息循环)→ host attach 成功
+- fd 1/2=/dev/null(所有 host 都如此)是 devhost-dbg 写 fd1/2 静默的物理原因, 非 composer 特有
+
+### 新工具(入库)
+- `tools/ptrace_tool.c`: 静态链接工具(init 服务启动), 自动找 composer_host,
+  PTRACE_ATTACH + GETREGSET 读 PC/LR/SP/FP + 帧回溯(12 帧)+ PEEKTEXT 读指令 +
+  读 /proc/pid/maps 匹配每个返回地址的库
+- `tools/dump_wchan.c` 增强: 循环 dump(pid 1-1500) + exe/syscall(阻塞 syscall+参数)/
+  MEM(futex 地址内容)/FDS(fd 表)/MAPS(匹配段)/PROBE 打印
+
+### 关键事实
+- 主线程 futex 等待值 0x80000000(bit31 标志), 地址为动态对象(ASLR 下每 boot 落在
+  libhdf_ipc_adapter/libutils/libhisysevent 等不同库的 rw 段)
+- 调用链(库归属, PTLIB): ret[0]=ld-musl(__wait), ret[1-3]=libhdf_utils(OsalSemWait 0xe1f4/
+  HdfMessageQueueNext 0x15784/HdfMessageLooperStart 0x12040), ret[4]=hdf_devhost(main)
+- fd 表: fd6=/dev/binder + fd7-10=libdisplay_composer_service_1.2 等(驱动 dlopen 发生)
+- 2 个 binder 线程(正常 IPC 服务线程)
+
+### 剩余问题
+1. **display_composer_service 未注册**(devmgr 查不到): 怀疑 DisplayComposerService 构造
+   失败走 ExitService(如 LoadVdiSo dlopen vdi_impl 失败—— 手动链接的
+   libdisplay_composer_vdi_impl_default.z.so 依赖需验证), host 级 attach 成功但服务未发布
+2. **composer_host 的 kmsg 日志全部静默**(其他 host 正常, fd1/2=/dev/null + kmsg open
+   失败)—— 驱动加载/服务发布的失败点看不到, 待解决日志或代码审查
+3. 已排除: sandbox(93 次跳过无效)/uid(改回 composer_host 无效)/seccomp(跳过无效)/
+   capset(跳过引发 sysrq crash 已回退)/SELinux(selinuxfs 未挂载)
+
+### 下一步
+- 验证 vdi_impl 是否被 dlopen(maps 是否有其段/依赖完整性)
+- 或审查 DisplayComposerService 构造/ExitService 路径(LoadVdiSo/LoadVdiAdapter)
+- 或解决 composer_host 的 kmsg 日志静默(open kmsg 失败原因)

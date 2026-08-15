@@ -8,8 +8,9 @@
 systemui/settingsdata 正常运行、bms/appmgr 数据链路完整)。
 EGL 软件渲染 ✅ (Mesa swrast, EGL 1.4)。
 **当前唯一卡点: 桌面 UI 未上屏 —— HDI 显示服务 `display_composer_service` 未注册
-(composer_host 初始化异常: comm 未变/无 ldso 日志但进程存活), RS 合成无法输出,
-屏幕全黑; virtio-gpu 下 QEMU 侧帧传输也不上屏 (QEMU 9/11 均复现)**
+(composer_host 的 host attach 成功、主线程在 HDF 消息循环正常等待, 但服务未发布,
+疑 DisplayComposerService 构造失败走 ExitService), RS 合成无法输出, 屏幕全黑;
+virtio-gpu 下 QEMU 侧帧传输也不上屏 (QEMU 9/11 均复现)**
 
 ## 2. 为什么会有这个仓库
 
@@ -46,7 +47,9 @@ OHOS 官方构建只支持 Linux。本仓库以"源码相对路径镜像"的方�
    init SetPerms 整体跳过)导致服务进程全是 root → binder caller uid=0 →
    installd/bms 权限全挂、应用 GetBundleInfoForSelf 失败(launcher 反复 spawn)。
    恢复两者后 launcher 完整启动。**别再把 setresuid/setgid/SetPerms 当"绕过"手段。**
-7. **当前卡点**: 显示服务未注册 (见 §7)。
+7. **当前卡点**: display_composer_service 未注册 (见 §7)。
+   已确认: composer_host 未卡死(主线程在 HDF 消息循环 OsalSemWait 等消息, ptrace
+   帧回溯证实); probe 无 = /data 0771 权限; 日志静默(fd1/2=/dev/null + kmsg open 失败)。
 
 ## 6. 修改 → 验证 循环 (核心工作流)
 

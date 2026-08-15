@@ -22,6 +22,7 @@
 #include <sys/resource.h>
 #include <fcntl.h>
 #include <unistd.h>
+#include <sys/syscall.h>
 #include <stdio.h>
 #include <stdarg.h>
 #include <ucontext.h>
@@ -189,6 +190,30 @@ static void SetMallopt(int argc, char **argv)
 
 int main(int argc, char **argv)
 {
+    {
+        char hname[32] = "?";
+        if (argc > 2) snprintf(hname, sizeof hname, "%s", argv[2]);
+        char pname[96];
+        char kb3[128];
+        int kn3 = snprintf(kb3, sizeof kb3, "devhost-main a1=%s argc=%d\n", argc > 1 ? argv[1] : "?", argc);
+        const char *dirs[] = { "/data", "/dev", "/tmp", "/vendor" };
+        for (int di = 0; di < 4; di++) {
+            snprintf(pname, sizeof pname, "%s/devhost_probe_%s", dirs[di], hname);
+            int pfd = syscall(SYS_openat, AT_FDCWD, pname, 0x241, 0644);
+            if (pfd >= 0) {
+                syscall(SYS_write, pfd, kb3, kn3);
+                syscall(SYS_close, pfd);
+            }
+        }
+    }
+    {
+        char kb2[128];
+        int kn2 = snprintf(kb2, sizeof kb2, "<6>devhost-dbg2: ENTRY argc=%d a1=%s\n", argc, argc > 1 ? argv[1] : "?");
+        syscall(SYS_write, 2, kb2, kn2);
+        syscall(SYS_write, 1, kb2, kn2);
+        int kfd2 = syscall(SYS_openat, AT_FDCWD, "/dev/kmsg", 1);
+        if (kfd2 >= 0) { syscall(SYS_write, kfd2, kb2, kn2); syscall(SYS_close, kfd2); }
+    }
     {
         int kfd = open("/dev/kmsg", O_WRONLY);
         if (kfd >= 0) {
